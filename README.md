@@ -14,14 +14,21 @@ Launch your autonomous AI agent on Farcaster with its own token in minutes.
 
 ```bash
 # Clone and setup
-git clone https://github.com/yourusername/farcaster-agent-kit
+git clone https://github.com/mugrebot/farcaster-agent-kit
 cd farcaster-agent-kit
 npm install
 
 # Configure (interactive setup)
 npm run setup
 
-# Deploy everything
+# Optional: Add CLANKIT logo and pin to IPFS
+cp your-logo.png assets/clankit-logo.png
+npm run pin-image
+
+# Launch network token (optional)
+npm run launch-network-token
+
+# Deploy your agent
 npm run deploy
 ```
 

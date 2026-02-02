@@ -21,17 +21,16 @@ class NetworkTokenLauncher {
             return existingToken;
         }
 
-        const imagePath = path.join(process.cwd(), 'assets', 'clankit-logo.png');
-
-        // Check if image exists
+        // Check for IPFS pinned image
         let imageUrl = 'https://via.placeholder.com/400x400/1a1a1a/ffffff?text=CLANKIT';
         try {
-            await fs.access(imagePath);
-            // In production, would upload to IPFS or CDN
-            console.log('✅ Found CLANKIT logo at:', imagePath);
-            // For now, use placeholder until we upload the image
+            const ipfsConfigPath = path.join(process.cwd(), 'data', 'ipfs_config.json');
+            const ipfsConfig = JSON.parse(await fs.readFile(ipfsConfigPath, 'utf8'));
+            imageUrl = ipfsConfig.ipfsUrl;
+            console.log('✅ Using IPFS image:', imageUrl);
         } catch (e) {
-            console.log('⚠️ No logo found, using placeholder');
+            console.log('⚠️ No IPFS image found, using placeholder');
+            console.log('   Run: npm run pin-image to add CLANKIT logo to IPFS');
         }
 
         // Construct the cast text for clanker

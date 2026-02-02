@@ -31,15 +31,39 @@ Individual agent tokens ($AGENTUSERNAME) pair with $CLANKIT:
 
 ## Launch Process
 
-1. **Put image** at `assets/clankit-logo.png`
-2. **Set environment variables**:
+1. **Install IPFS** (if not already installed):
+   ```bash
+   # Option 1: Install IPFS CLI
+   # Follow: https://docs.ipfs.tech/install/
+
+   # Option 2: Use IPFS Desktop
+   # Download: https://github.com/ipfs/ipfs-desktop
+   ```
+
+2. **Start IPFS daemon**:
+   ```bash
+   ipfs daemon
+   # Or open IPFS Desktop
+   ```
+
+3. **Add your logo** to `assets/clankit-logo.png`
+
+4. **Pin image to IPFS**:
+   ```bash
+   npm run pin-image
+   # This will pin your logo to IPFS and generate ipfs:// URL
+   ```
+
+5. **Set environment variables**:
    ```env
    NEYNAR_API_KEY=your-key
    NEYNAR_SIGNER_UUID=your-signer
    ```
-3. **Launch network token**:
+
+6. **Launch network token**:
    ```bash
    npm run launch-network-token
+   # Uses IPFS image automatically
    ```
 
 ## Agent Integration
