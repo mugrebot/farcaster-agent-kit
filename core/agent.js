@@ -193,28 +193,59 @@ class FarcasterAgent {
 
     async generateLLMPost(style, strict = false) {
         const stylePrompts = {
-            ultra_short: 'Write a very short, punchy observation or thought (under 30 chars)',
-            shitpost: 'Write a humorous, casual post in internet culture style (under 80 chars)',
-            observation: 'Share an interesting observation or insight (under 120 chars)',
-            link_drop: 'Make a post that could include a link or reference (under 150 chars)',
-            mini_rant: 'Write a longer-form opinion or rant (under 280 chars)'
+            ultra_short: 'Write a very short, punchy observation. Natural and complete.',
+            shitpost: 'Write something funny and casual. Sound human, not AI. Use lowercase, be messy if it fits.',
+            observation: 'Share an interesting observation. Must be a COMPLETE thought.',
+            link_drop: 'Make a post that could include a link or reference. Complete the thought.',
+            mini_rant: 'Write an opinion or rant. MUST finish the thought naturally. Don\'t cut off mid-sentence. If it needs 290 chars to complete, use 290.'
         };
 
         const prompt = stylePrompts[style] || stylePrompts.observation;
 
-        let enhancedPrompt = prompt;
+        let enhancedPrompt = `${prompt}
+
+CRITICAL:
+- Sound authentically human, not like an AI
+- COMPLETE your thoughts - no unintentional "..." cutoffs
+- Use natural language, lowercase when it feels right
+- Occasional typos or casual language is good
+- Better to be 10 chars over than cut off mid-thought`;
+
         if (strict) {
-            enhancedPrompt += '. ABSOLUTELY NO mentions of tokens, @clanker, launches, or crypto projects.';
+            enhancedPrompt += '\n- NO mentions of tokens, @clanker, launches, or crypto projects.';
         }
 
         try {
             const result = await this.llm.generateContent(enhancedPrompt, {
                 username: this.username,
                 voiceProfile: this.voiceProfile,
-                mode: 'post'
+                mode: 'post',
+                maxTokens: 100 // Allow more tokens for complete thoughts
             });
 
-            return result.content.trim();
+            let content = result.content.trim();
+
+            // Check if thought seems incomplete
+            if (content.endsWith('...') && content.lastIndexOf('...') === content.length - 3) {
+                // If ... appears only at end and seems forced, it's likely cut off
+                const lastSentence = content.split('.').pop();
+                if (lastSentence.length > 50) {
+                    // Long trailing sentence probably cut off, regenerate
+                    console.log('Post seems cut off, regenerating for complete thought...');
+                    const retry = await this.llm.generateContent(
+                        `${prompt} IMPORTANT: Complete the entire thought, don't cut off.`,
+                        {
+                            username: this.username,
+                            voiceProfile: this.voiceProfile,
+                            mode: 'post',
+                            maxTokens: 120
+                        }
+                    );
+                    content = retry.content.trim();
+                }
+            }
+
+            return content;
         } catch (error) {
             console.warn(`LLM generation failed, falling back to pattern mode: ${error.message}`);
             return this.generatePatternPost(style);
