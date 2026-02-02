@@ -7,7 +7,6 @@ const fs = require('fs').promises;
 const path = require('path');
 
 const FarcasterAgent = require('../core/agent');
-const ClankerLauncher = require('../token/clanker');
 const { AgentRegistry, AgentInteraction } = require('../core/registry');
 
 class AgentRunner {
@@ -18,18 +17,15 @@ class AgentRunner {
             username: process.env.FARCASTER_USERNAME,
             fid: parseInt(process.env.FARCASTER_FID),
             postsPerWindow: parseInt(process.env.POSTS_PER_WINDOW) || 2,
-            replyToMentions: process.env.REPLY_TO_MENTIONS === 'true',
-            launchToken: process.env.LAUNCH_TOKEN === 'true'
+            replyToMentions: process.env.REPLY_TO_MENTIONS === 'true'
         };
 
         this.agent = new FarcasterAgent(this.config);
-        this.clanker = new ClankerLauncher(this.config);
         this.registry = new AgentRegistry();
         this.interaction = new AgentInteraction(this.config);
 
         this.postsThisWindow = 0;
         this.windowStart = Date.now();
-        this.hasLaunchedToken = false;
     }
 
     async initialize() {
@@ -39,11 +35,6 @@ class AgentRunner {
 
         // Load or fetch posts
         await this.loadAgentProfile();
-
-        // Check/launch token
-        if (this.config.launchToken && !this.hasLaunchedToken) {
-            await this.launchToken();
-        }
 
         // Register self
         await this.registerAgent();
@@ -116,15 +107,6 @@ class AgentRunner {
         return allPosts;
     }
 
-    async launchToken() {
-        try {
-            const tokenData = await this.clanker.launchToken();
-            this.hasLaunchedToken = true;
-            console.log('🎉 Token launched:', tokenData.ticker);
-        } catch (error) {
-            console.error('❌ Failed to launch token:', error.message);
-        }
-    }
 
     async registerAgent() {
         console.log('📝 Registering agent...');
@@ -133,13 +115,11 @@ class AgentRunner {
             await this.fetchAllPosts()
         );
 
-        const tokenData = await this.clanker.getTokenData();
-
         const registrationData = {
             name: `${this.config.username}-agent`,
             fid: this.config.fid,
             username: this.config.username,
-            token: tokenData?.ticker || 'PENDING',
+            token: 'NO_TOKEN', // Agents don't launch their own tokens yet
             github: `@${this.config.username}`,
             soulHash
         };

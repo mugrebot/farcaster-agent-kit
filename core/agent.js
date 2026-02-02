@@ -2,6 +2,8 @@ const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
 const AgentSelfAwareness = require('./self-awareness');
+const LLMProvider = require('./llm-provider');
+const AntiClankerProtection = require('./anti-clanker');
 
 class FarcasterAgent {
     constructor(config) {
@@ -13,6 +15,19 @@ class FarcasterAgent {
         // Add self-awareness
         this.awareness = new AgentSelfAwareness(this.username);
 
+        // Add LLM provider
+        this.llm = new LLMProvider({
+            provider: process.env.LLM_PROVIDER || 'pattern',
+            apiKey: this.getLLMApiKey(),
+            model: this.getLLMModel(),
+            baseURL: process.env.LOCAL_BASE_URL,
+            maxTokens: parseInt(process.env.LLM_MAX_TOKENS) || 150,
+            temperature: parseFloat(process.env.LLM_TEMPERATURE) || 0.8
+        });
+
+        // Add anti-clanker protection
+        this.antiClanker = new AntiClankerProtection();
+
         this.voiceProfile = null;
         this.posts = [];
         this.postStyles = {
@@ -22,6 +37,27 @@ class FarcasterAgent {
             link_drop: { max: 150, weight: 0.15 },
             mini_rant: { max: 280, weight: 0.10 }
         };
+    }
+
+    getLLMApiKey() {
+        const provider = process.env.LLM_PROVIDER;
+        switch(provider) {
+            case 'openai': return process.env.OPENAI_API_KEY;
+            case 'anthropic': return process.env.ANTHROPIC_API_KEY;
+            case 'groq': return process.env.GROQ_API_KEY;
+            default: return null;
+        }
+    }
+
+    getLLMModel() {
+        const provider = process.env.LLM_PROVIDER;
+        switch(provider) {
+            case 'openai': return process.env.OPENAI_MODEL;
+            case 'anthropic': return process.env.ANTHROPIC_MODEL;
+            case 'groq': return process.env.GROQ_MODEL;
+            case 'local': return process.env.LOCAL_MODEL;
+            default: return null;
+        }
     }
 
     async loadPosts(postsData) {
@@ -85,7 +121,7 @@ class FarcasterAgent {
         return analysis;
     }
 
-    generatePost(style = null) {
+    async generatePost(style = null) {
         if (!this.voiceProfile) {
             throw new Error('Voice profile not loaded');
         }
@@ -100,23 +136,27 @@ class FarcasterAgent {
         const maxLength = this.postStyles[style].max;
         let post = '';
 
-        // Generate based on style
-        switch(style) {
-            case 'ultra_short':
-                post = this.generateUltraShort();
-                break;
-            case 'shitpost':
-                post = this.generateShitpost();
-                break;
-            case 'observation':
-                post = this.generateObservation();
-                break;
-            case 'link_drop':
-                post = this.generateLinkDrop();
-                break;
-            case 'mini_rant':
-                post = this.generateRant();
-                break;
+        // Choose generation method based on LLM provider
+        if (this.llm.provider === 'pattern') {
+            // Use original pattern-based generation
+            post = this.generatePatternPost(style);
+        } else {
+            // Use LLM generation
+            post = await this.generateLLMPost(style);
+        }
+
+        // Apply anti-clanker protection
+        const scanResult = this.antiClanker.scanContent(post);
+        if (scanResult.isViolation) {
+            this.antiClanker.logViolation(this.username, scanResult);
+
+            // Regenerate with stricter prompt if LLM, or filter if pattern
+            if (this.llm.provider !== 'pattern') {
+                post = await this.generateLLMPost(style, true); // stricter mode
+            } else {
+                const filtered = this.antiClanker.filterContent(post);
+                post = filtered.filtered;
+            }
         }
 
         // Apply voice styling
@@ -133,15 +173,88 @@ class FarcasterAgent {
         return post;
     }
 
+    generatePatternPost(style) {
+        // Original pattern-based generation
+        switch(style) {
+            case 'ultra_short':
+                return this.generateUltraShort();
+            case 'shitpost':
+                return this.generateShitpost();
+            case 'observation':
+                return this.generateObservation();
+            case 'link_drop':
+                return this.generateLinkDrop();
+            case 'mini_rant':
+                return this.generateRant();
+            default:
+                return this.generateObservation();
+        }
+    }
+
+    async generateLLMPost(style, strict = false) {
+        const stylePrompts = {
+            ultra_short: 'Write a very short, punchy observation or thought (under 30 chars)',
+            shitpost: 'Write a humorous, casual post in internet culture style (under 80 chars)',
+            observation: 'Share an interesting observation or insight (under 120 chars)',
+            link_drop: 'Make a post that could include a link or reference (under 150 chars)',
+            mini_rant: 'Write a longer-form opinion or rant (under 280 chars)'
+        };
+
+        const prompt = stylePrompts[style] || stylePrompts.observation;
+
+        let enhancedPrompt = prompt;
+        if (strict) {
+            enhancedPrompt += '. ABSOLUTELY NO mentions of tokens, @clanker, launches, or crypto projects.';
+        }
+
+        try {
+            const result = await this.llm.generateContent(enhancedPrompt, {
+                username: this.username,
+                voiceProfile: this.voiceProfile,
+                mode: 'post'
+            });
+
+            return result.content.trim();
+        } catch (error) {
+            console.warn(`LLM generation failed, falling back to pattern mode: ${error.message}`);
+            return this.generatePatternPost(style);
+        }
+    }
+
     // Generate reply with agent awareness
-    generateReply(originalText) {
+    async generateReply(originalText) {
         // Check if they're asking about the agent
         if (this.awareness.detectAgentQuestion(originalText)) {
             return this.awareness.generateAgentResponse(originalText);
         }
 
-        // Otherwise generate normal reply
-        return this.generatePost('shitpost');
+        // Anti-clanker protection for replies
+        const replyCheck = this.antiClanker.scanContent(originalText);
+        if (replyCheck.isViolation) {
+            return this.antiClanker.getWarningMessage();
+        }
+
+        // Generate reply based on mode
+        if (this.llm.provider === 'pattern') {
+            // Use pattern-based reply
+            return this.generatePost('shitpost');
+        } else {
+            // Use LLM for contextual reply
+            try {
+                const result = await this.llm.generateContent(
+                    `Reply to this message in a conversational way: "${originalText}"`,
+                    {
+                        username: this.username,
+                        voiceProfile: this.voiceProfile,
+                        mode: 'reply'
+                    }
+                );
+                return result.content.trim();
+            } catch (error) {
+                console.warn(`LLM reply failed, using pattern fallback: ${error.message}`);
+                return this.generatePost('shitpost');
+            }
+        }
     }
 
     generateUltraShort() {

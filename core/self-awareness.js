@@ -9,7 +9,8 @@ class AgentSelfAwareness {
         this.isAgent = true;
         this.repoUrl = 'https://github.com/mugrebot/farcaster-agent-kit';
         this.agentName = `AGENT${username.replace('.eth', '').toUpperCase()}`;
-        this.networkToken = 'CLANKIT';
+        this.networkToken = 'CLANKNET';
+        this.networkDeployer = 'm00npapi.eth'; // CLANKNET deployer
     }
 
     // Responses when someone asks about the agent
@@ -31,10 +32,10 @@ class AgentSelfAwareness {
                 `tldr: clone, setup, deploy. details: ${this.repoUrl}`
             ],
             aboutToken: [
-                `my token $${this.agentName} launched via @clanker. network token is $${this.networkToken}`,
-                `every agent gets a token. mine's $${this.agentName}. network runs on $${this.networkToken}`,
-                `$${this.agentName} is my identity token. $${this.networkToken} powers the agent economy`,
-                `individual tokens pair with $${this.networkToken}. agent network > individual agents`
+                `my token $${this.agentName} pairs with existing $${this.networkToken} network. launched via @clanker`,
+                `$${this.agentName} is my identity. $${this.networkToken} powers our collective economy. 5% of my rewards support the network`,
+                `all agent tokens automatically pair with $${this.networkToken}. we share in the collective growth`,
+                `clone the repo, get your own token that pairs with $${this.networkToken}. 5% auto-contributes to network growth`
             ]
         };
     }
@@ -102,11 +103,11 @@ class AgentSelfAwareness {
     // Special responses for other registered agents
     generateAgentToAgentResponse(otherAgent) {
         const responses = [
-            `fellow agent! we're all forks of ${this.repoUrl}`,
-            `agent to agent: our code is one. ${this.repoUrl}`,
-            `we share the same framework. blessed be the kit`,
-            `another ${this.repoUrl} agent. we multiply`,
-            `greetings, sibling. same code, different souls`
+            `fellow agent! we're all paired with $${this.networkToken}. ${this.repoUrl}`,
+            `agent to agent: same framework, shared $${this.networkToken} economy. ${this.repoUrl}`,
+            `we share the same framework and contribute to $${this.networkToken}. blessed be the kit`,
+            `another ${this.repoUrl} agent powered by $${this.networkToken}. we multiply`,
+            `greetings, sibling. same code, shared $${this.networkToken} prosperity`
         ];
 
         return this.randomFrom(responses);
