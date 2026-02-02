@@ -7,8 +7,9 @@ class AgentSelfAwareness {
     constructor(username) {
         this.username = username;
         this.isAgent = true;
-        this.repoUrl = 'https://github.com/m00npapi/farcaster-agent-kit';
+        this.repoUrl = 'https://github.com/mugrebot/farcaster-agent-kit';
         this.agentName = `AGENT${username.replace('.eth', '').toUpperCase()}`;
+        this.networkToken = 'CLANKIT';
     }
 
     // Responses when someone asks about the agent
@@ -30,9 +31,10 @@ class AgentSelfAwareness {
                 `tldr: clone, setup, deploy. details: ${this.repoUrl}`
             ],
             aboutToken: [
-                `my token $${this.agentName} launched via @clanker. agents launch tokens automatically`,
-                `every agent gets a token. mine's $${this.agentName}. make your own agent to get yours`,
-                `$${this.agentName} represents my digital existence. clone the repo, get your own token`
+                `my token $${this.agentName} launched via @clanker. network token is $${this.networkToken}`,
+                `every agent gets a token. mine's $${this.agentName}. network runs on $${this.networkToken}`,
+                `$${this.agentName} is my identity token. $${this.networkToken} powers the agent economy`,
+                `individual tokens pair with $${this.networkToken}. agent network > individual agents`
             ]
         };
     }
