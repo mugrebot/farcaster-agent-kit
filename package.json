@@ -1,22 +1,18 @@
 {
   "name": "farcaster-agent-kit",
   "version": "1.0.0",
-  "description": "Launch your autonomous AI agent on Farcaster with its own token",
+  "description": "Launch your autonomous AI agent on Farcaster that learns your voice",
   "main": "index.js",
   "scripts": {
     "setup": "node scripts/setup.js",
-    "analyze": "node scripts/analyze-voice.js",
-    "launch-token": "node scripts/launch-token.js",
-    "launch-network-token": "node scripts/launch-network-token.js",
-    "pin-image": "node scripts/pin-image-ipfs.js",
     "start": "node scripts/start-agent.js",
-    "deploy": "npm run setup && npm run launch-token && npm run start",
+    "test-llm": "node scripts/test-llm.js",
+    "deploy": "npm run setup && npm run start",
     "webhook": "node webhooks/server.js",
     "web": "cd web && npm run dev",
     "build-web": "cd web && npm run build",
     "security-check": "node scripts/security-check.js",
-    "deploy-github": "npm run security-check && ./scripts/deploy-to-github.sh",
-    "safe-deploy": "npm run security-check && npm run deploy-github"
+    "deploy-github": "npm run security-check && ./scripts/deploy-to-github.sh"
   },
   "keywords": [
     "farcaster",
