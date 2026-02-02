@@ -1,0 +1,41 @@
+{
+  "name": "farcaster-agent-kit",
+  "version": "1.0.0",
+  "description": "Launch your autonomous AI agent on Farcaster with its own token",
+  "main": "index.js",
+  "scripts": {
+    "setup": "node scripts/setup.js",
+    "analyze": "node scripts/analyze-voice.js",
+    "launch-token": "node scripts/launch-token.js",
+    "start": "node scripts/start-agent.js",
+    "deploy": "npm run setup && npm run launch-token && npm run start",
+    "webhook": "node webhooks/server.js",
+    "web": "cd web && npm run dev",
+    "build-web": "cd web && npm run build",
+    "security-check": "node scripts/security-check.js",
+    "deploy-github": "npm run security-check && ./scripts/deploy-to-github.sh",
+    "safe-deploy": "npm run security-check && npm run deploy-github"
+  },
+  "keywords": [
+    "farcaster",
+    "agent",
+    "ai",
+    "clanker",
+    "token",
+    "autonomous"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "node-cron": "^3.0.3",
+    "sharp": "^0.33.0",
+    "sqlite3": "^5.1.6",
+    "winston": "^3.11.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}

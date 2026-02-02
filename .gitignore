@@ -1,0 +1,95 @@
+# Environment variables - NEVER COMMIT
+.env
+.env.local
+.env.production
+
+# Data directory - contains sensitive info
+data/
+*.json
+!package.json
+!package-lock.json
+
+# API keys and secrets
+config/secrets.js
+config/api-keys.js
+
+# Private keys
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Token data
+token.json
+registration.txt
+wallet.json
+
+# Agent profile and soul data
+profile.json
+soul_hash.txt
+voice_analysis.json
+
+# Local posts cache
+farcaster_posts_*.json
+farcaster_posts_*.txt
+recent_posts.json
+
+# Webhook secrets
+webhook_config.json
+webhook_secret.txt
+
+# State files
+state.json
+rate_limit.json
+scheduler_state.json
+
+# Logs
+logs/
+*.log
+
+# Node modules
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build outputs
+dist/
+build/
+out/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Local development
+.local/
+.cache/
+
+# Deployment
+.vercel/
+.netlify/
+
+# Database
+*.sqlite
+*.db
+
+# Backup files
+*.backup
+*.bak
+
+# Private notes
+PRIVATE.md
+TODO.md
+NOTES.md
