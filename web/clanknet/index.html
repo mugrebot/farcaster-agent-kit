@@ -111,7 +111,33 @@
                 0 0 15px rgba(255, 0, 0, 0.2),
                 inset 0 0 15px rgba(255, 0, 0, 0.1);
             color: #ff6666;
-            display: none; /* Hidden until CA is added */
+            display: block;
+            position: relative;
+        }
+
+        .copy-button {
+            background: rgba(255, 0, 0, 0.2);
+            border: 1px solid rgba(255, 0, 0, 0.4);
+            color: #ff6666;
+            padding: 8px 15px;
+            border-radius: 5px;
+            margin-left: 10px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            transition: all 0.3s ease;
+            display: inline-block;
+        }
+
+        .copy-button:hover {
+            background: rgba(255, 0, 0, 0.3);
+            color: #ff3333;
+            transform: translateY(-1px);
+        }
+
+        .copy-button.copied {
+            background: rgba(0, 255, 0, 0.2);
+            border-color: rgba(0, 255, 0, 0.4);
+            color: #66ff66;
         }
 
         .links {
@@ -239,7 +265,7 @@
     </style>
 </head>
 <body>
-    <div class="coming-soon">🚧 Coming Soon</div>
+    <div class="coming-soon">✅ $CLANKNET Live</div>
 
     <div class="container">
         <div class="logo">
@@ -261,7 +287,8 @@
 
         <div class="contract-address" id="contractAddress">
             <strong>Contract Address:</strong><br>
-            <span id="caValue">TBD</span>
+            <span id="caValue">0x623693BefAECf61484e344fa272e9A8B82d9BB07</span>
+            <button class="copy-button" onclick="copyContractAddress()">📋 Copy</button>
         </div>
 
         <div class="quick-start">
@@ -279,8 +306,8 @@
             <a href="https://warpcast.com/m00npapi" class="link" target="_blank">
                 👤 Creator
             </a>
-            <a href="#" class="link" target="_blank">
-                💰 Buy $CLANKNET (Coming Soon)
+            <a href="https://matcha.xyz/tokens/base/0x623693befaecf61484e344fa272e9a8b82d9bb07" class="link primary" target="_blank">
+                💰 Buy $CLANKNET
             </a>
         </div>
     </div>
@@ -294,6 +321,38 @@
                 document.getElementById('contractAddress').style.display = 'block';
                 document.querySelector('.status').innerHTML = '✅ Network Token Live';
             }
+        }
+
+        // Copy contract address to clipboard
+        function copyContractAddress() {
+            const address = document.getElementById('caValue').textContent;
+            const button = document.querySelector('.copy-button');
+
+            navigator.clipboard.writeText(address).then(function() {
+                button.textContent = '✅ Copied!';
+                button.classList.add('copied');
+
+                setTimeout(function() {
+                    button.textContent = '📋 Copy';
+                    button.classList.remove('copied');
+                }, 2000);
+            }).catch(function() {
+                // Fallback for older browsers
+                const textarea = document.createElement('textarea');
+                textarea.value = address;
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+
+                button.textContent = '✅ Copied!';
+                button.classList.add('copied');
+
+                setTimeout(function() {
+                    button.textContent = '📋 Copy';
+                    button.classList.remove('copied');
+                }, 2000);
+            });
         }
 
         // Check for contract address in URL params

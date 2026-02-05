@@ -117,27 +117,49 @@ CRITICAL RULES:
     }
 
     async generateAnthropic(systemPrompt, prompt) {
-        const response = await axios.post('https://api.anthropic.com/v1/messages', {
-            model: this.model,
-            max_tokens: this.maxTokens,
-            temperature: this.temperature,
-            system: systemPrompt,
-            messages: [
-                { role: 'user', content: prompt }
-            ]
-        }, {
-            headers: {
-                'x-api-key': this.apiKey,
-                'Content-Type': 'application/json',
-                'anthropic-version': '2023-06-01'
-            }
-        });
+        const maxRetries = 3;
+        const baseDelay = 1000;
 
-        return {
-            content: response.data.content[0].text,
-            usage: response.data.usage,
-            provider: 'anthropic'
-        };
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                const response = await axios.post('https://api.anthropic.com/v1/messages', {
+                    model: this.model,
+                    max_tokens: this.maxTokens,
+                    temperature: this.temperature,
+                    system: systemPrompt,
+                    messages: [
+                        { role: 'user', content: prompt }
+                    ]
+                }, {
+                    headers: {
+                        'x-api-key': this.apiKey,
+                        'Content-Type': 'application/json',
+                        'anthropic-version': '2023-06-01'
+                    },
+                    timeout: 30000 // 30 second timeout
+                });
+
+                return {
+                    content: response.data.content[0].text,
+                    usage: response.data.usage,
+                    provider: 'anthropic'
+                };
+            } catch (error) {
+                const isRetryable = error.response?.status === 503 ||
+                                  error.response?.status === 502 ||
+                                  error.response?.status === 429 ||
+                                  error.code === 'ETIMEDOUT';
+
+                if (isRetryable && attempt < maxRetries) {
+                    const delay = baseDelay * Math.pow(2, attempt - 1);
+                    console.warn(`⚠️ Anthropic API retry ${attempt}/${maxRetries} after ${delay}ms`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    continue;
+                }
+
+                throw error;
+            }
+        }
     }
 
     async generateGroq(systemPrompt, prompt) {

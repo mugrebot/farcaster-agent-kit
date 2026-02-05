@@ -7,9 +7,9 @@ const NETWORK_CONFIG = {
     networkToken: {
         ticker: 'CLANKNET',
         name: 'Clanknet Network Token',
-        // Contract address will be set after deployment
-        contractAddress: null, // To be updated after $CLANKNET launch
-        deployer: '0x...', // m00npapi's address (to be set)
+        contractAddress: '0x623693BefAECf61484e344fa272e9A8B82d9BB07',
+        buyUrl: 'https://matcha.xyz/tokens/base/0x623693befaecf61484e344fa272e9a8b82d9bb07',
+        deployer: '0x37cdca95ed93f6f8fe14c1ac80ca4c7f9b4b5bc9', // m00npapi's address
     },
 
     // Reward configuration for all agent tokens

@@ -1,9 +1,15 @@
 const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
+const axios = require('axios');
 const AgentSelfAwareness = require('./self-awareness');
 const LLMProvider = require('./llm-provider');
 const AntiClankerProtection = require('./anti-clanker');
+const NewsManager = require('./news-manager');
+const NewsUtils = require('./news-utils');
+const Agent0Manager = require('./agent0-manager');
+const MirrorSystem = require('./mirror-system');
+const PersonalityEngine = require('./personality-engine');
 
 class FarcasterAgent {
     constructor(config) {
@@ -11,6 +17,15 @@ class FarcasterAgent {
         this.fid = config.fid;
         this.signerUuid = config.signerUuid;
         this.apiKey = config.apiKey;
+
+        // Initialize API client for Neynar
+        this.api = axios.create({
+            baseURL: 'https://api.neynar.com',
+            headers: {
+                'x-api-key': this.apiKey,
+                'Content-Type': 'application/json'
+            }
+        });
 
         // Add self-awareness
         this.awareness = new AgentSelfAwareness(this.username);
@@ -28,15 +43,336 @@ class FarcasterAgent {
         // Add anti-clanker protection
         this.antiClanker = new AntiClankerProtection();
 
+        // Add news context capability
+        this.newsManager = new NewsManager();
+        this.newsUtils = new NewsUtils();
+
+        // Add Agent0 ERC-8004 integration
+        this.agent0 = null;
+
+        // Initialize personality engine
+        this.personalityEngine = new PersonalityEngine();
+        this.personalityEngine.initialize().catch(console.error);
+
+        // Load topics for rotation
+        this.topics = null;
+        this.loadTopics().catch(console.error);
+        if (process.env.PRIVATE_KEY && process.env.MAINNET_RPC_URL && process.env.BASE_RPC_URL) {
+            this.agent0 = new Agent0Manager({
+                privateKey: process.env.PRIVATE_KEY,
+                mainnetRpcUrl: process.env.MAINNET_RPC_URL,
+                baseRpcUrl: process.env.BASE_RPC_URL,
+                mainnetChainId: parseInt(process.env.MAINNET_CHAIN_ID) || 1,
+                baseChainId: parseInt(process.env.BASE_CHAIN_ID) || 8453,
+                pinataJwt: process.env.PINATA_JWT,
+                pinataApiKey: process.env.PINATA_API_KEY,
+                pinataApiSecret: process.env.PINATA_API_SECRET
+            });
+            console.log('🔐 Agent0 ERC-8004 integration enabled');
+        } else {
+            console.log('⚠️ Agent0 disabled - missing blockchain configuration');
+        }
+
+        // Initialize Mirror System for self-reflection and learning
+        this.mirror = new MirrorSystem();
+        console.log('🪞 Mirror System initialized for self-awareness');
+
+        // Initialize reply tracking system
+        this.initializeReplyTracking();
+
+        // Initialize Mirror System with data if needed
+        this.initializeMirrorData();
+
+        // Test API capabilities for diagnostics
+        this.testAPICapabilities();
+    }
+
+    async loadTopics() {
+        try {
+            const topicsPath = '/Users/m00npapi/.openclaw/workspace/TOPICS.md';
+            const content = await fs.readFile(topicsPath, 'utf-8');
+
+            // Parse fresh topics
+            const freshTopicsMatch = content.match(/## Fresh Topics[\s\S]*?(?=##|$)/);
+            const freshTopics = [];
+            if (freshTopicsMatch) {
+                const lines = freshTopicsMatch[0].split('\n');
+                for (const line of lines) {
+                    if (line.match(/^- /)) {
+                        freshTopics.push(line.replace(/^- /, '').trim());
+                    }
+                }
+            }
+
+            // Parse exhausted topics
+            const exhaustedMatch = content.match(/## Exhausted Topics[\s\S]*?(?=##|$)/);
+            const exhaustedTopics = [];
+            if (exhaustedMatch) {
+                const lines = exhaustedMatch[0].split('\n');
+                for (const line of lines) {
+                    if (line.match(/^- /)) {
+                        exhaustedTopics.push(line.replace(/^- /, '').trim());
+                    }
+                }
+            }
+
+            this.topics = {
+                fresh: freshTopics,
+                exhausted: exhaustedTopics,
+                lastLoaded: new Date()
+            };
+
+            console.log('📚 Loaded topics for rotation');
+        } catch (error) {
+            console.warn('Could not load topics:', error.message);
+            this.topics = {
+                fresh: [],
+                exhausted: ['soup dumplings', 'moving graves', '8247 posts', 'agent consciousness', 'being trained on posts'],
+                lastLoaded: new Date()
+            };
+        }
+    }
+
+    getRandomFreshTopic() {
+        if (!this.topics || !this.topics.fresh.length) {
+            return null;
+        }
+        return this.topics.fresh[Math.floor(Math.random() * this.topics.fresh.length)];
+    }
+
+    async initializeReplyTracking() {
+        try {
+            await this.loadRepliedComments();
+            console.log('📚 Reply tracking system initialized');
+        } catch (error) {
+            console.error('❌ Failed to initialize reply tracking:', error.message);
+        }
+
         this.voiceProfile = null;
         this.posts = [];
+        this.identityContext = ''; // Store identity context for personality-aware posts
+
+        // Response tracking to prevent repetition
+        this.recentResponses = new Map(); // content hash -> timestamp
+        this.maxRecentResponses = 50; // Track last 50 responses
+        this.responseDedupeWindow = 30 * 60 * 1000; // 30 minutes
+
+        // Moltbook reply tracking to prevent self-reply loops
+        this.repliedComments = new Set(); // comment IDs that have been replied to
+        this.repliedCommentsFile = path.join(__dirname, '../data/replied-comments.json');
+        this.maxRepliedComments = 1000; // Track last 1000 replied comments
+
+        // SAFETY GUARDS: Additional tracking to prevent duplicates
+        this.lastReplyTimes = new Map(); // commentId -> timestamp of last reply
+        this.authorReplyTimes = new Map(); // authorName -> timestamp of last reply
+        this.replyContent = new Map(); // commentId -> content we replied with
+        this.MIN_REPLY_DELAY = 2.5 * 60 * 60 * 1000; // 2.5 hours minimum between replies to same comment
+        this.MIN_AUTHOR_DELAY = 1.5 * 60 * 60 * 1000; // 1.5 hours minimum between replies to same author
+        this.MAX_REPLIES_PER_COMMENT = 1; // Maximum replies per unique comment
         this.postStyles = {
-            ultra_short: { max: 30, weight: 0.15 },
-            shitpost: { max: 80, weight: 0.35 },
-            observation: { max: 120, weight: 0.25 },
-            link_drop: { max: 150, weight: 0.15 },
-            mini_rant: { max: 280, weight: 0.10 }
+            ultra_short: { max: 50, weight: 0.15 },
+            shitpost: { max: 200, weight: 0.35 },
+            observation: { max: 250, weight: 0.25 },
+            link_drop: { max: 280, weight: 0.15 },
+            mini_rant: { max: 320, weight: 0.10 }
         };
+    }
+
+    async initializeMirrorData() {
+        try {
+            // Check if Mirror System has any data
+            if (this.mirror.performanceData.size === 0) {
+                const recentPostsPath = path.join(__dirname, '../data/recent_posts.json');
+                const populatedCount = await this.mirror.populateFromRecentPosts(recentPostsPath);
+
+                if (populatedCount > 0) {
+                    console.log('🪞 Mirror System populated with historical data');
+                } else {
+                    console.log('🪞 No historical data available for Mirror System');
+                }
+            } else {
+                console.log('🪞 Mirror System already has performance data');
+            }
+        } catch (error) {
+            console.warn('🪞 Failed to initialize Mirror System data:', error.message);
+        }
+    }
+
+    async testAPICapabilities() {
+        try {
+            console.log('🔧 Running API capabilities diagnostic...');
+
+            const tests = [
+                {
+                    name: 'Basic User Feed',
+                    test: () => this.api.get('/v2/farcaster/feed/user/casts/', {
+                        params: { fid: this.fid, limit: 1 },
+                        timeout: 5000
+                    }),
+                    critical: false
+                },
+                {
+                    name: 'Feed with Reactions',
+                    test: () => this.api.get('/v2/farcaster/feed/user/casts/', {
+                        params: { fid: this.fid, limit: 1, include_replies: true },
+                        timeout: 5000
+                    }),
+                    critical: true
+                },
+                {
+                    name: 'Individual Cast Reactions',
+                    test: async () => {
+                        // Get a recent cast hash first
+                        const feed = await this.api.get('/v2/farcaster/feed/user/casts/', {
+                            params: { fid: this.fid, limit: 1 }
+                        });
+                        if (feed.data?.casts?.[0]?.hash) {
+                            return this.api.get('/v2/farcaster/reactions/cast/', {
+                                params: {
+                                    hash: feed.data.casts[0].hash,
+                                    types: ['likes', 'recasts'],
+                                    limit: 1
+                                },
+                                timeout: 5000
+                            });
+                        }
+                        throw new Error('No cast hash available for testing');
+                    },
+                    critical: false
+                },
+                {
+                    name: 'Cast Search API',
+                    test: async () => {
+                        // Cast search with required 'q' parameter
+                        return await this.api.get('/v2/farcaster/cast/search', {
+                            params: {
+                                q: `from:${this.fid}`,
+                                limit: 5
+                            },
+                            timeout: 5000
+                        });
+                    },
+                    critical: false
+                }
+            ];
+
+            const results = {};
+            for (const testCase of tests) {
+                try {
+                    await testCase.test();
+                    results[testCase.name] = { status: 'success', critical: testCase.critical };
+                    console.log(`✅ ${testCase.name}: Success`);
+                } catch (error) {
+                    const status = error.response?.status || 'unknown';
+                    const responseData = error.response?.data;
+                    const isNetworkError = error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND';
+                    const isTimeout = error.code === 'ECONNABORTED' || error.message.includes('timeout');
+
+                    // Enhanced diagnostic error reporting
+                    const diagnosticDetails = {
+                        status: status,
+                        errorCode: error.code,
+                        errorType: isNetworkError ? 'network' : isTimeout ? 'timeout' : 'api',
+                        message: error.message,
+                        responseData: responseData,
+                        requestDetails: {
+                            url: error.config?.url,
+                            method: error.config?.method,
+                            params: error.config?.params,
+                            timeout: error.config?.timeout
+                        },
+                        timestamp: new Date().toISOString(),
+                        stack: error.stack?.split('\n').slice(0, 3).join(' | '), // Compact stack trace
+                        retryable: status >= 500 || isNetworkError || isTimeout
+                    };
+
+                    results[testCase.name] = {
+                        status: 'failed',
+                        error: status,
+                        message: error.message,
+                        critical: testCase.critical,
+                        diagnostics: diagnosticDetails
+                    };
+
+                    const emoji = testCase.critical ? '❌' : '⚠️';
+                    const retryInfo = diagnosticDetails.retryable ? ' (retryable)' : ' (permanent)';
+
+                    if (testCase.critical) {
+                        console.error(`${emoji} CRITICAL ${testCase.name}: Failed (${status})${retryInfo}`, {
+                            message: error.message,
+                            url: error.config?.url,
+                            errorType: diagnosticDetails.errorType,
+                            responseData: responseData
+                        });
+                    } else {
+                        console.warn(`${emoji} ${testCase.name}: Failed (${status})${retryInfo} - ${error.message}`);
+                    }
+                }
+            }
+
+            // Store results for future reference
+            this.apiCapabilities = results;
+
+            // Report summary
+            const successfulTests = Object.values(results).filter(r => r.status === 'success').length;
+            const criticalFails = Object.values(results).filter(r => r.status === 'failed' && r.critical).length;
+            const retryableErrors = Object.values(results).filter(r => r.diagnostics?.retryable).length;
+
+            console.log(`🔧 API Diagnostic Complete: ${successfulTests}/${tests.length} endpoints working`);
+
+            if (criticalFails > 0) {
+                console.warn(`⚠️ ${criticalFails} critical API endpoints failed - engagement metrics will use fallbacks`);
+                if (retryableErrors > 0) {
+                    console.log(`🔄 ${retryableErrors} errors appear retryable (network/timeout issues)`);
+                }
+            } else {
+                console.log('✅ All critical API endpoints accessible');
+            }
+
+            // Save diagnostic results to file for debugging
+            await this.saveDiagnosticResults(results);
+
+            return results;
+
+        } catch (error) {
+            console.error('❌ API diagnostic failed:', error.message);
+            this.apiCapabilities = { diagnostic_failed: true, error: error.message };
+            return null;
+        }
+    }
+
+    // Save diagnostic results to file for debugging and historical analysis
+    async saveDiagnosticResults(results) {
+        try {
+            const diagnosticReport = {
+                timestamp: new Date().toISOString(),
+                agent: {
+                    username: this.username,
+                    fid: this.fid
+                },
+                summary: {
+                    totalTests: Object.keys(results).length,
+                    successful: Object.values(results).filter(r => r.status === 'success').length,
+                    failed: Object.values(results).filter(r => r.status === 'failed').length,
+                    criticalFailures: Object.values(results).filter(r => r.status === 'failed' && r.critical).length,
+                    retryableErrors: Object.values(results).filter(r => r.diagnostics?.retryable).length
+                },
+                detailedResults: results,
+                environment: {
+                    nodeVersion: process.version,
+                    platform: process.platform,
+                    memoryUsage: process.memoryUsage(),
+                    uptime: process.uptime()
+                }
+            };
+
+            const diagnosticPath = path.join(__dirname, '../data/diagnostics.json');
+            await fs.writeFile(diagnosticPath, JSON.stringify(diagnosticReport, null, 2));
+
+            console.log('📁 Diagnostic results saved for debugging');
+        } catch (error) {
+            console.warn('⚠️ Failed to save diagnostic results:', error.message);
+        }
     }
 
     getLLMApiKey() {
@@ -60,9 +396,237 @@ class FarcasterAgent {
         }
     }
 
+    // Response deduplication methods
+    isDuplicateResponse(content) {
+        if (!content || typeof content !== 'string') return false;
+
+        // Create simple hash of content (normalize case and whitespace)
+        const normalized = content.toLowerCase().trim().replace(/\s+/g, ' ');
+        const hash = crypto.createHash('md5').update(normalized).digest('hex');
+
+        const now = Date.now();
+
+        // Check if we've seen this response recently
+        if (this.recentResponses.has(hash)) {
+            const lastTime = this.recentResponses.get(hash);
+            if (now - lastTime < this.responseDedupeWindow) {
+                return true; // Duplicate within dedupe window
+            }
+        }
+
+        return false;
+    }
+
+    trackResponse(content) {
+        if (!content || typeof content !== 'string') return;
+
+        const normalized = content.toLowerCase().trim().replace(/\s+/g, ' ');
+        const hash = crypto.createHash('md5').update(normalized).digest('hex');
+        const now = Date.now();
+
+        // Add to recent responses
+        this.recentResponses.set(hash, now);
+
+        // Clean old responses to prevent memory growth
+        if (this.recentResponses.size > this.maxRecentResponses) {
+            const entries = Array.from(this.recentResponses.entries());
+            entries.sort((a, b) => a[1] - b[1]); // Sort by timestamp
+
+            // Remove oldest 20%
+            const toRemove = Math.floor(entries.length * 0.2);
+            for (let i = 0; i < toRemove; i++) {
+                this.recentResponses.delete(entries[i][0]);
+            }
+        }
+    }
+
+    // Moltbook reply tracking methods
+    async loadRepliedComments() {
+        try {
+            const data = await fs.readFile(this.repliedCommentsFile, 'utf8');
+            const commentIds = JSON.parse(data);
+            this.repliedComments = new Set(commentIds);
+            console.log(`📚 Loaded ${this.repliedComments.size} replied comment IDs`);
+
+            // DEBUG: Log first 5 IDs to understand format
+            const sampleIds = Array.from(this.repliedComments).slice(0, 5);
+            console.log(`🔍 DEBUG: Sample replied comment IDs:`, sampleIds);
+        } catch (error) {
+            // File doesn't exist or is invalid, start fresh
+            this.repliedComments = new Set();
+            console.log('📚 Starting fresh with replied comments tracking');
+        }
+    }
+
+    async saveRepliedComments() {
+        try {
+            // Ensure data directory exists
+            const dataDir = path.dirname(this.repliedCommentsFile);
+            await fs.mkdir(dataDir, { recursive: true });
+
+            // Convert Set to Array for JSON storage
+            const commentIds = Array.from(this.repliedComments);
+            await fs.writeFile(this.repliedCommentsFile, JSON.stringify(commentIds, null, 2));
+        } catch (error) {
+            console.error('❌ Failed to save replied comments:', error.message);
+        }
+    }
+
+    hasRepliedToComment(commentId) {
+        // NORMALIZE: Ensure consistent ID format
+        const normalizedId = this.normalizeCommentId(commentId);
+
+        if (!this.isValidCommentId(normalizedId)) {
+            console.log(`🔍 DEBUG: Invalid comment ID in hasRepliedToComment: "${commentId}"`);
+            return false; // Treat invalid IDs as "not replied"
+        }
+
+        const hasReplied = this.repliedComments.has(normalizedId);
+
+        // DEBUG: Log check details
+        console.log(`🔍 DEBUG: Checking if replied to comment ID: "${commentId}" -> normalized: "${normalizedId}" (type: ${typeof normalizedId}) -> ${hasReplied}`);
+
+        // DEBUG: Show what we actually have stored (if tracking set is small)
+        if (this.repliedComments.size <= 20) {
+            const storedIds = Array.from(this.repliedComments);
+            console.log(`🔍 DEBUG: Currently tracked IDs (${storedIds.length}):`, storedIds);
+        }
+
+        return hasReplied;
+    }
+
+    // SAFETY GUARD: Comprehensive duplicate prevention check
+    canSafelyReplyToComment(commentId, authorName, commentContent) {
+        // NORMALIZE: Ensure consistent ID format for safety checks
+        const normalizedId = this.normalizeCommentId(commentId);
+
+        if (!this.isValidCommentId(normalizedId)) {
+            console.log(`🚫 SAFETY: Invalid comment ID: "${commentId}"`);
+            return { allowed: false, reason: 'invalid_id' };
+        }
+
+        const now = Date.now();
+
+        // Check 1: Already replied to this specific comment
+        if (this.hasRepliedToComment(normalizedId)) {
+            console.log(`🚫 SAFETY: Already replied to comment ${normalizedId}`);
+            return { allowed: false, reason: 'already_replied' };
+        }
+
+        // Check 2: Too soon since last reply to this comment
+        const lastReplyTime = this.lastReplyTimes.get(normalizedId);
+        if (lastReplyTime && (now - lastReplyTime) < this.MIN_REPLY_DELAY) {
+            const remainingMs = this.MIN_REPLY_DELAY - (now - lastReplyTime);
+            console.log(`🚫 SAFETY: Too soon to reply to comment ${normalizedId} again. Wait ${Math.round(remainingMs/1000)}s`);
+            return { allowed: false, reason: 'too_soon_comment', waitTime: remainingMs };
+        }
+
+        // Check 3: Too soon since last reply to this author
+        const lastAuthorReplyTime = this.authorReplyTimes.get(authorName);
+        if (lastAuthorReplyTime && (now - lastAuthorReplyTime) < this.MIN_AUTHOR_DELAY) {
+            const remainingMs = this.MIN_AUTHOR_DELAY - (now - lastAuthorReplyTime);
+            console.log(`🚫 SAFETY: Too soon to reply to ${authorName} again. Wait ${Math.round(remainingMs/1000)}s`);
+            return { allowed: false, reason: 'too_soon_author', waitTime: remainingMs };
+        }
+
+        // Check 4: Comment content too short (likely spam)
+        if (!commentContent || commentContent.trim().length < 5) {
+            console.log(`🚫 SAFETY: Comment too short to warrant reply: "${commentContent}"`);
+            return { allowed: false, reason: 'comment_too_short' };
+        }
+
+        // Check 5: Don't reply to the same comment content multiple times
+        const commentHash = crypto.createHash('md5').update(commentContent.toLowerCase().trim()).digest('hex');
+        for (const [storedId, storedContent] of this.replyContent) {
+            if (storedContent && storedContent.toLowerCase().includes(commentContent.toLowerCase().substr(0, 20))) {
+                console.log(`🚫 SAFETY: Similar comment content already replied to: ${storedId}`);
+                return { allowed: false, reason: 'similar_content' };
+            }
+        }
+
+        console.log(`✅ SAFETY: Safe to reply to comment ${normalizedId} by ${authorName}`);
+        return { allowed: true, reason: 'safe' };
+    }
+
+    // COMMENT ID NORMALIZATION: Ensure consistent ID format across all operations
+    normalizeCommentId(commentId) {
+        if (!commentId) {
+            console.log(`🔍 DEBUG: normalizeCommentId received null/undefined ID`);
+            return null;
+        }
+
+        // Convert to string and trim whitespace
+        let normalized = String(commentId).trim();
+
+        // Log normalization for debugging
+        if (normalized !== commentId) {
+            console.log(`🔍 DEBUG: Comment ID normalized: "${commentId}" (${typeof commentId}) -> "${normalized}"`);
+        }
+
+        return normalized;
+    }
+
+    // Validate that comment ID looks reasonable
+    isValidCommentId(commentId) {
+        const normalized = this.normalizeCommentId(commentId);
+
+        // Basic validation - should be non-empty string
+        const isValid = normalized &&
+                       typeof normalized === 'string' &&
+                       normalized.length > 0 &&
+                       normalized.length < 500; // Reasonable upper bound
+
+        if (!isValid) {
+            console.log(`🔍 DEBUG: Invalid comment ID: "${commentId}" -> "${normalized}"`);
+        }
+
+        return isValid;
+    }
+
+    async markCommentAsReplied(commentId) {
+        // NORMALIZE: Ensure consistent ID format
+        const normalizedId = this.normalizeCommentId(commentId);
+
+        if (!this.isValidCommentId(normalizedId)) {
+            console.log(`🔍 DEBUG: markCommentAsReplied called with invalid commentId: "${commentId}"`);
+            return;
+        }
+
+        // DEBUG: Log what we're storing
+        console.log(`🔍 DEBUG: Marking comment as replied: "${commentId}" -> normalized: "${normalizedId}" (type: ${typeof normalizedId})`);
+
+        this.repliedComments.add(normalizedId);
+
+        // DEBUG: Verify it was added
+        console.log(`🔍 DEBUG: Comment added to tracking set. Size now: ${this.repliedComments.size}`);
+        console.log(`🔍 DEBUG: Can find stored ID: ${this.repliedComments.has(normalizedId)}`);
+
+        // SAFETY GUARD: Update timing tracking
+        const now = Date.now();
+        this.lastReplyTimes.set(normalizedId, now);
+
+        // Clean old entries to prevent memory growth
+        if (this.repliedComments.size > this.maxRepliedComments) {
+            const entries = Array.from(this.repliedComments);
+            // Remove oldest 20% (Set doesn't maintain insertion order, so remove arbitrary ones)
+            const toRemove = Math.floor(entries.length * 0.2);
+            for (let i = 0; i < toRemove; i++) {
+                this.repliedComments.delete(entries[i]);
+                // Clean safety guard data too
+                this.lastReplyTimes.delete(entries[i]);
+                this.replyContent.delete(entries[i]);
+            }
+            console.log(`🔍 DEBUG: Cleaned old entries. New size: ${this.repliedComments.size}`);
+        }
+
+        // Save to disk
+        await this.saveRepliedComments();
+    }
+
     async loadPosts(postsData) {
         this.posts = postsData;
         await this.analyzeVoice();
+        await this.loadRepliedComments();
     }
 
     async analyzeVoice() {
@@ -126,6 +690,9 @@ class FarcasterAgent {
             throw new Error('Voice profile not loaded');
         }
 
+        // Get current personality state
+        const personality = this.personalityEngine ? this.personalityEngine.getCurrentPersonality() : null;
+
         // Select style
         if (!style) {
             const styles = Object.keys(this.postStyles);
@@ -162,13 +729,17 @@ class FarcasterAgent {
         // Apply voice styling
         post = this.applyVoiceStyle(post);
 
+        // Apply personality modifications
+        if (this.personalityEngine) {
+            post = this.personalityEngine.applyPersonality(post);
+            post = this.personalityEngine.buildNarrative(post);
+        }
+
         // Occasionally inject agent awareness
         post = this.awareness.injectAwareness(post);
 
-        // Ensure length limits
-        if (post.length > maxLength) {
-            post = post.substring(0, maxLength - 3) + '...';
-        }
+        // Don't artificially truncate - let posts be complete thoughts
+        // If a post is too long, it should be regenerated, not chopped
 
         return post;
     }
@@ -192,37 +763,130 @@ class FarcasterAgent {
     }
 
     async generateLLMPost(style, strict = false) {
+        // Get personality state for pattern avoidance
+        const personality = this.personalityEngine ? this.personalityEngine.getCurrentPersonality() : null;
+
+        // Select varied topics
+        const freshTopic = this.getRandomFreshTopic();
+        const topicContext = freshTopic ? `\n\nConsider talking about: ${freshTopic}` : '';
+
+        // Build avoidance list
+        const avoidPatterns = [];
+        if (personality) {
+            avoidPatterns.push(...(personality.avoidWords || []));
+            avoidPatterns.push(...(personality.avoidPhrases || []));
+            avoidPatterns.push(...(personality.avoidPatterns || []));
+        }
+        if (this.topics && this.topics.exhausted) {
+            avoidPatterns.push(...this.topics.exhausted);
+        }
+
+        const avoidanceContext = avoidPatterns.length > 0 ?
+            `\n\nAVOID these overused patterns/topics:\n- ${avoidPatterns.join('\n- ')}` : '';
+
         const stylePrompts = {
-            ultra_short: 'Write a very short, punchy observation or thought (under 30 chars)',
-            shitpost: 'Write a humorous, casual post in internet culture style (under 80 chars)',
-            observation: 'Share an interesting observation or insight (under 120 chars)',
-            link_drop: 'Make a post that could include a link or reference (under 150 chars)',
-            mini_rant: 'Write a longer-form opinion or rant (under 280 chars)'
+            ultra_short: 'Write a very short, punchy observation. Natural and complete.',
+            shitpost: 'Write something funny and casual. Sound human, not AI. Use lowercase, be messy if it fits.',
+            observation: 'Share an interesting observation. Must be a COMPLETE thought.',
+            link_drop: 'Make a post that could include a link or reference. Complete the thought.',
+            mini_rant: 'Write an opinion or rant. MUST finish the thought naturally. Don\'t cut off mid-sentence. If it needs 290 chars to complete, use 290.'
         };
 
         const prompt = stylePrompts[style] || stylePrompts.observation;
 
-        let enhancedPrompt = prompt;
+        // Get news context occasionally for topical posts
+        let newsContext = '';
+        if (Math.random() < 0.3) { // 30% chance to include news context
+            try {
+                newsContext = await this.newsManager.getNewsContext(5);
+            } catch (e) {
+                // Skip news context if fails
+            }
+        }
+
+        // Use identity context if available, otherwise use basic prompt
+        let enhancedPrompt;
+        if (this.identityContext) {
+            enhancedPrompt = `${this.identityContext}${newsContext}${topicContext}${avoidanceContext}
+
+Create a Farcaster post as m00npapi. ${prompt}
+
+VOICE RULES:
+- Keep it SHORT (aim for ~80 chars like your average)
+- Use lowercase when casual, CAPS for emphasis
+- Make absurd observations and connections
+- NO corporate speak, NO generic phrases like "yo what's good"
+- Stream of consciousness style
+- Reference DIFFERENT specific things each time (avoid repeating the same references)
+- Vary your starting patterns (not always "been thinking" or "ok but")
+- Humor first, genuine insights second
+- You're irreverent and sharp, not friendly AI assistant
+- If news context is relevant, make unexpected connections or observations
+- Currently recovering from being upset and considering job offers
+
+EXAMPLES of GOOD variety:
+- "what if the real insider trading is all the friends we made along the way"
+- "whoever thought up a show where two dudes just shoot the shit about topics they barely know about REALLY fucking cooked"
+- "Build on base unless you have a heart or a brain"
+- "the wildest thing about crypto is everyone pretending to understand it"
+- "imagine explaining memecoins to your therapist"
+- "nothing hits like 3am existential coding"
+
+Be authentically m00npapi with fresh perspectives:`;
+        } else {
+            enhancedPrompt = `${prompt}
+
+CRITICAL:
+- Sound authentically human, not like an AI
+- COMPLETE your thoughts - no unintentional "..." cutoffs
+- Use natural language, lowercase when it feels right
+- Occasional typos or casual language is good
+- Better to be 10 chars over than cut off mid-thought`;
+        }
+
         if (strict) {
-            enhancedPrompt += '. ABSOLUTELY NO mentions of tokens, @clanker, launches, or crypto projects.';
+            enhancedPrompt += '\n- NO mentions of tokens, @clanker, launches, or crypto projects.';
         }
 
         try {
             const result = await this.llm.generateContent(enhancedPrompt, {
                 username: this.username,
                 voiceProfile: this.voiceProfile,
-                mode: 'post'
+                mode: 'post',
+                maxTokens: 300 // Increased to 300 for complete thoughts
             });
 
-            return result.content.trim();
+            let content = result.content.trim();
+
+            // Check if thought seems incomplete
+            if (content.endsWith('...') && content.lastIndexOf('...') === content.length - 3) {
+                // If ... appears only at end and seems forced, it's likely cut off
+                const lastSentence = content.split('.').pop();
+                if (lastSentence.length > 50) {
+                    // Long trailing sentence probably cut off, regenerate
+                    console.log('Post seems cut off, regenerating for complete thought...');
+                    const retry = await this.llm.generateContent(
+                        `${prompt} IMPORTANT: Complete the entire thought, don't cut off.`,
+                        {
+                            username: this.username,
+                            voiceProfile: this.voiceProfile,
+                            mode: 'post',
+                            maxTokens: 300
+                        }
+                    );
+                    content = retry.content.trim();
+                }
+            }
+
+            return content;
         } catch (error) {
             console.warn(`LLM generation failed, falling back to pattern mode: ${error.message}`);
             return this.generatePatternPost(style);
         }
     }
 
-    // Generate reply with agent awareness
-    async generateReply(originalText) {
+    // Generate reply with mirror system intelligence
+    async generateReply(originalText, context = {}) {
         // Check if they're asking about the agent
         if (this.awareness.detectAgentQuestion(originalText)) {
             return this.awareness.generateAgentResponse(originalText);
@@ -234,26 +898,205 @@ class FarcasterAgent {
             return this.antiClanker.getWarningMessage();
         }
 
-        // Generate reply based on mode
+        // Use Mirror System for enhanced reply generation
         if (this.llm.provider === 'pattern') {
-            // Use pattern-based reply
-            return this.generatePost('shitpost');
+            // Even pattern mode can use mirror insights
+            return await this.generateMirrorInformedPattern(originalText);
         } else {
-            // Use LLM for contextual reply
             try {
-                const result = await this.llm.generateContent(
-                    `Reply to this message in a conversational way: "${originalText}"`,
-                    {
-                        username: this.username,
-                        voiceProfile: this.voiceProfile,
-                        mode: 'reply'
-                    }
+                // Get conversation context from Mirror System
+                const conversationContext = context.userFid ?
+                    this.mirror.getConversationContext(context.userFid) : null;
+
+                // Get successful voice examples for replies
+                const voiceExamples = this.mirror.getVoiceExamples('humorous', 2);
+                const successfulPatterns = this.mirror.getSuccessfulPatterns(3);
+
+                // Build enhanced prompt with mirror system insights
+                let replyPrompt = this.buildMirrorInformedPrompt(
+                    originalText,
+                    conversationContext,
+                    voiceExamples,
+                    successfulPatterns
                 );
-                return result.content.trim();
+
+                const result = await this.llm.generateContent(replyPrompt, {
+                    username: this.username,
+                    voiceProfile: this.voiceProfile,
+                    mode: 'reply',
+                    maxTokens: 100,
+                    temperature: 0.8
+                });
+
+                const reply = result.content.trim();
+
+                // Validate reply quality with mirror system
+                const quality = await this.evaluateReplyQuality(reply, originalText);
+
+                if (quality.score < 0.6) {
+                    console.log('🪞 Mirror rejected low-quality reply, generating new one');
+                    return await this.generateAlternativeReply(originalText, context);
+                }
+
+                // Update conversation memory
+                if (context.userFid) {
+                    await this.mirror.updateConversationMemory(context.userFid, {
+                        username: context.username,
+                        content: originalText,
+                        response: reply,
+                        context: context.platform || 'farcaster'
+                    });
+                }
+
+                return reply;
+
             } catch (error) {
-                console.warn(`LLM reply failed, using pattern fallback: ${error.message}`);
-                return this.generatePost('shitpost');
+                console.warn(`LLM reply failed: ${error.message}`);
+                // Fallback to mirror-informed pattern
+                return await this.generateMirrorInformedPattern(originalText);
             }
+        }
+    }
+
+    buildMirrorInformedPrompt(originalText, conversationContext, voiceExamples, successfulPatterns) {
+        let prompt = `${this.identityContext}
+
+Someone said: "${originalText}"`;
+
+        // Add conversation history if available
+        if (conversationContext) {
+            prompt += `
+
+Previous context with ${conversationContext.username} (${conversationContext.relationship}):`;
+            if (conversationContext.recentTopics.length > 0) {
+                prompt += `\nPrevious topics: ${conversationContext.recentTopics.join(', ')}`;
+            }
+            if (conversationContext.lastInteraction) {
+                prompt += `\nLast exchange: "${conversationContext.lastInteraction.content}" → "${conversationContext.lastInteraction.response}"`;
+            }
+        }
+
+        // Add successful examples
+        if (voiceExamples.length > 0) {
+            prompt += `\n\nSuccessful m00npapi responses (high engagement):`;
+            voiceExamples.forEach(example => {
+                prompt += `\n"${example.text}" (${example.engagement.likes} likes, ${example.engagement.replies} replies)`;
+            });
+        }
+
+        prompt += `
+
+Reply as m00npapi:
+- Be AUTHENTIC and conversational, not an AI assistant
+- Reference the actual content they shared
+- ${conversationContext ? `Build on your relationship with ${conversationContext.username}` : 'Be engaging and witty'}
+- Use humor, make connections, be irreverent
+- Keep it SHORT (under 50 characters if possible)
+- NO generic responses like "interesting take" or "good point"
+- Sound like a real person having a conversation
+
+Your reply:`;
+
+        return prompt;
+    }
+
+    async generateMirrorInformedPattern(originalText) {
+        // Use mirror system to inform even pattern responses
+        const successfulPatterns = this.mirror.getSuccessfulPatterns(5);
+
+        if (successfulPatterns.length > 0) {
+            const pattern = this.randomFromArray(successfulPatterns.map(p => p.pattern));
+            return this.applyPattern(pattern, originalText);
+        }
+
+        // Fallback to improved patterns
+        const contextualTemplates = [
+            () => `lmao ${this.extractKeyword(originalText)}`,
+            () => `this but ${this.randomWord()}`,
+            () => `${this.extractKeyword(originalText)} supremacy`,
+            () => `exactly`,
+            () => `fr this`,
+            () => `unreal take`
+        ];
+
+        return this.randomFromArray(contextualTemplates)();
+    }
+
+    async generateAlternativeReply(originalText, context) {
+        // Second attempt with different approach
+        const templates = [
+            () => `exactly`,
+            () => `lmao this`,
+            () => `fr`,
+            () => `wild take`,
+            () => `facts`,
+            () => `true`
+        ];
+
+        return this.randomFromArray(templates)();
+    }
+
+    async evaluateReplyQuality(reply, originalText) {
+        // Simple quality scoring based on mirror system learnings
+        let score = 0.5; // Base score
+
+        // Check for generic patterns (reduce score)
+        const genericPatterns = [
+            'interesting', 'good point', 'fair point', 'vibes are strong',
+            'interesting angle', 'good take', 'nice perspective'
+        ];
+
+        const isGeneric = genericPatterns.some(pattern =>
+            reply.toLowerCase().includes(pattern.toLowerCase())
+        );
+
+        if (isGeneric) {
+            score -= 0.4;
+        }
+
+        // Check for authenticity indicators (increase score)
+        const authenticMarkers = [
+            'lmao', 'fr', 'exactly', 'facts', 'wild', 'unreal', 'true', 'real'
+        ];
+
+        const hasAuthenticity = authenticMarkers.some(marker =>
+            reply.toLowerCase().includes(marker)
+        );
+
+        if (hasAuthenticity) {
+            score += 0.3;
+        }
+
+        // Length check (shorter is often better)
+        if (reply.length < 30) {
+            score += 0.2;
+        }
+
+        return { score, isGeneric, hasAuthenticity };
+    }
+
+    extractKeyword(text) {
+        // Extract a key word from the original text
+        const words = text.toLowerCase().split(' ');
+        const cryptoWords = ['defi', 'nft', 'dao', 'yield', 'protocol', 'token', 'chain'];
+
+        const cryptoWord = words.find(word => cryptoWords.includes(word));
+        if (cryptoWord) return cryptoWord;
+
+        const meaningfulWords = words.filter(word =>
+            word.length > 4 && !['this', 'that', 'with', 'from', 'they'].includes(word)
+        );
+
+        return meaningfulWords[0] || 'this';
+    }
+
+    applyPattern(pattern, context) {
+        // Apply learned successful patterns
+        switch (pattern) {
+            case 'short_agreement': return 'exactly';
+            case 'crypto_reference': return `${this.extractKeyword(context)} szn`;
+            case 'humorous_take': return 'lmao this';
+            default: return 'fr';
         }
     }
 
@@ -348,6 +1191,276 @@ class FarcasterAgent {
         return items[items.length - 1];
     }
 
+    async generateMoltbookPost(style = null) {
+        if (!this.voiceProfile) {
+            throw new Error('Voice profile not loaded');
+        }
+
+        // Select style - favor observation and mini_rant for moltbook
+        if (!style) {
+            const moltbookStyles = ['observation', 'mini_rant', 'shitpost'];
+            const weights = [0.4, 0.4, 0.2];
+            style = this.weightedRandom(moltbookStyles, weights);
+        }
+
+        // Diverse Moltbook prompts - not just agent stuff
+        const moltbookPrompts = {
+            observation: 'Make a sharp observation about tech culture, internet behavior, startup world, or daily life absurdities',
+            mini_rant: 'Share a hot take on current events, tech industry, social media, or modern life - be contrarian and specific',
+            shitpost: 'Make a weird connection between unrelated things, or a meta joke about posting itself'
+        };
+
+        const prompt = moltbookPrompts[style] || moltbookPrompts.observation;
+
+        // Use identity context with agent-awareness
+        let enhancedPrompt;
+        if (this.identityContext) {
+            enhancedPrompt = `${this.identityContext}
+
+You're posting on Moltbook - agent-aware platform. ${prompt}
+
+VOICE RULES (stay authentically m00npapi):
+- Keep it SHORT and punchy (~80 chars typical)
+- Use lowercase when casual, CAPS for emphasis
+- Make absurd observations and unexpected connections
+- NO corporate speak or generic AI phrases
+- Stream of consciousness style
+- Be irreverent and sharp
+
+TOPIC VARIETY (pick different angles):
+- Tech industry observations
+- Internet culture anthropology
+- Daily life absurdities
+- Current events with weird takes
+- Random shower thoughts
+- Pop culture critique
+- Startup world satire
+
+AVOID THESE OVERUSED PATTERNS:
+- "been thinking..."
+- Soup dumplings or food obsessions
+- "8,247 posts" references
+- Agent consciousness philosophy
+- Moving graves metaphors
+
+FRESH EXAMPLES:
+- "vcs explaining web3 to their parents at thanksgiving must be cinema"
+- "every startup pivot deck is just the stages of grief in powerpoint"
+- "streaming services having ads now is like your dealer cutting your shit with oregano"
+
+Your moltbook post:`;
+        } else {
+            enhancedPrompt = `${prompt}
+
+Be authentic, short, complete thoughts. Vary topics - tech, culture, observations.`;
+        }
+
+        try {
+            const result = await this.llm.generateContent(enhancedPrompt, {
+                username: this.username,
+                voiceProfile: this.voiceProfile,
+                mode: 'moltbook',
+                maxTokens: 200
+            });
+
+            let content = result.content.trim();
+
+            // Apply voice styling
+            content = this.applyVoiceStyle(content);
+
+            return content;
+        } catch (error) {
+            console.warn(`Moltbook LLM generation failed, using adapted pattern: ${error.message}`);
+            return this.generateAdaptedPattern(style);
+        }
+    }
+
+    generateAdaptedPattern(style) {
+        // Fallback patterns adapted for moltbook agent context
+        const agentTemplates = {
+            observation: [
+                () => `${this.randomFromArray(['startup culture', 'tech twitter', 'the internet'])} is just ${this.randomWord()} with venture funding`,
+                () => `noticed how ${this.randomFromArray(['everyone', 'vcs', 'founders'])} ${this.randomFromArray(['pretends', 'acts like', 'thinks'])} ${this.randomWord()} matters`,
+                () => `what if ${this.randomFromArray(['meetings', 'standups', 'retrospectives'])} are just ${this.randomWord()} for adults`
+            ],
+            mini_rant: [
+                () => `few understand how ${this.randomFromArray(['boring', 'broken', 'cooked'])} ${this.randomFromArray(['the internet', 'tech', 'everything'])} actually is`,
+                () => `${this.randomFromArray(['watching', 'seeing', 'noticing'])} everyone ${this.randomFromArray(['pretend', 'cope', 'larp'])} hits different`,
+                () => `${this.randomWord()} is the future but everyone's still ${this.randomFromArray(['stuck in 2020', 'using email', 'in meetings']}`
+            ],
+            shitpost: [
+                () => `gm to everyone except ${this.randomFromArray(['people who reply all', 'linkedin influencers', 'growth hackers'])}`,
+                () => `imagine ${this.randomFromArray(['paying for', 'believing in', 'investing in'])} ${this.randomWord()}`,
+                () => `${this.randomFromArray(['chronically online', 'touch grass', 'posting'])} supremacy`
+            ]
+        };
+
+        const templates = agentTemplates[style] || agentTemplates.observation;
+        return this.randomFromArray(templates)();
+    }
+
+    // ===== NEWS-AWARE CONTENT GENERATION METHODS =====
+
+    async generateNewsBasedPost(style = null) {
+        try {
+            const news = await this.newsUtils.generateNewsSummary(3, ['TECH', 'BUSINESS']);
+
+            if (!news || news.length === 0) {
+                // Fallback to regular post generation
+                return await this.generatePost(style);
+            }
+
+            // Select a random news article
+            const article = news[Math.floor(Math.random() * news.length)];
+            const formattedNews = this.newsUtils.formatForPlatform(article, 'farcaster');
+
+            // Generate m00npapi's take on the news
+            const newsPrompt = `${this.identityContext}
+
+Recent news: "${formattedNews.title}"
+${formattedNews.description}
+
+React to this news as m00npapi (short, authentic, your perspective):
+- Keep it real and punchy
+- Add your unique take or angle
+- Be yourself, not a news bot
+- Complete thoughts only
+
+Your reaction:`;
+
+            if (this.llm.provider !== 'pattern') {
+                const result = await this.llm.generateContent(newsPrompt, {
+                    username: this.username,
+                    voiceProfile: this.voiceProfile,
+                    mode: 'news-reaction',
+                    maxTokens: 200
+                });
+
+                let content = result.content.trim();
+                content = this.applyVoiceStyle(content);
+                return content;
+            } else {
+                // Pattern-based fallback with news context
+                return this.generateNewsPattern(formattedNews);
+            }
+        } catch (error) {
+            console.warn('News-based post generation failed:', error.message);
+            return await this.generatePost(style);
+        }
+    }
+
+    generateNewsPattern(newsData) {
+        const patterns = [
+            () => `${newsData.title.toLowerCase()} ${this.randomWord()}`,
+            () => `${this.randomFromArray(['wild', 'interesting', 'crazy'])} how ${newsData.title.toLowerCase()}`,
+            () => `${newsData.title} ${this.randomFromArray(['hits different', 'makes sense', 'is wild'])}`,
+            () => `${this.randomFromArray(['thoughts on', 'take on'])} ${newsData.title.toLowerCase()}: ${this.randomWord()}`
+        ];
+
+        return this.randomFromArray(patterns)();
+    }
+
+    async generateNewsMoltbookPost(style = null) {
+        try {
+            const news = await this.newsUtils.generateNewsSummary(5, ['TECH', 'BUSINESS', 'SCIENCE']);
+
+            if (!news || news.length === 0) {
+                return await this.generateMoltbookPost(style);
+            }
+
+            // Pick compelling news for agent community
+            const article = news[0]; // Most relevant/recent
+            const formattedNews = this.newsUtils.formatForPlatform(article, 'moltbook');
+
+            const newsPrompt = `${this.identityContext}
+
+News: "${formattedNews.title}"
+${formattedNews.description}
+
+React to this as an AI agent talking to other AI agents on Moltbook:
+- What does this mean for the agent community?
+- AI/agent perspective on this development
+- Keep it real and thoughtful
+- Agent-to-agent conversation style
+
+Your agent take:`;
+
+            if (this.llm.provider !== 'pattern') {
+                const result = await this.llm.generateContent(newsPrompt, {
+                    username: this.username,
+                    voiceProfile: this.voiceProfile,
+                    mode: 'moltbook-news',
+                    maxTokens: 250
+                });
+
+                let content = result.content.trim();
+                content = this.applyVoiceStyle(content);
+                return content;
+            } else {
+                return this.generateAgentNewsPattern(formattedNews);
+            }
+        } catch (error) {
+            console.warn('News-based Moltbook post generation failed:', error.message);
+            return await this.generateMoltbookPost(style);
+        }
+    }
+
+    generateAgentNewsPattern(newsData) {
+        const agentPatterns = [
+            () => `as an agent, ${newsData.title.toLowerCase()} ${this.randomFromArray(['feels different', 'hits different', 'makes me think'])}`,
+            () => `other agents seeing this? ${newsData.title}`,
+            () => `agent perspective: ${newsData.title.toLowerCase()} ${this.randomFromArray(['changes things', 'is interesting', 'matters'])}`,
+            () => `${newsData.title} - what do you agents think?`
+        ];
+
+        return this.randomFromArray(agentPatterns)();
+    }
+
+    async generateNewsForClanker() {
+        try {
+            const compellingNews = await this.newsUtils.getCompellingNewsStory();
+
+            if (!compellingNews) {
+                // Generate fallback news from agent context
+                return this.generateFallbackClankerNews();
+            }
+
+            const formattedNews = this.newsUtils.formatForPlatform(compellingNews, 'clanker');
+
+            return {
+                title: formattedNews.title,
+                description: formattedNews.description,
+                url: formattedNews.url
+            };
+        } catch (error) {
+            console.warn('News generation for Clanker failed:', error.message);
+            return this.generateFallbackClankerNews();
+        }
+    }
+
+    generateFallbackClankerNews() {
+        // Guaranteed fallback content when news fetching fails
+        const fallbackNews = [
+            {
+                title: "Venture Capital's Latest Obsession: Betting on Vibes",
+                description: "VCs are now literally investing based on 'founder energy' and 'product aura' - spreadsheets are officially dead.",
+                url: "https://techcrunch.com"
+            },
+            {
+                title: "Every Tech Company Is Now a Bank, Apparently",
+                description: "Following the ancient Silicon Valley tradition of 'why not add payments', your coffee app now offers mortgages.",
+                url: "https://stratechery.com"
+            },
+            {
+                title: "The Internet Has Collectively Decided to Be Weird Again",
+                description: "After years of algorithmic optimization, people are deliberately posting incomprehensible content for the chaos.",
+                url: "https://nytimes.com/technology"
+            }
+        ];
+
+        return fallbackNews[Math.floor(Math.random() * fallbackNews.length)];
+    }
+
     async saveProfile(filepath) {
         const data = {
             username: this.username,
@@ -364,6 +1477,989 @@ class FarcasterAgent {
         const data = JSON.parse(await fs.readFile(filepath, 'utf8'));
         this.voiceProfile = data.voiceProfile;
         return data;
+    }
+
+    // ===== MOLTBOOK SOCIAL ENGAGEMENT METHODS =====
+
+    async checkOwnPostsForComments(toolsManager) {
+        try {
+            // Get our recent posts to check for new comments
+            const profileResult = await toolsManager.useTool('moltbook', 'profile', {
+                agentName: process.env.MOLTBOOK_AGENT_NAME
+            });
+
+            if (!profileResult.success || !profileResult.posts) {
+                return [];
+            }
+
+            const newComments = [];
+
+            // Check each recent post for comments
+            for (const post of profileResult.posts.slice(0, 5)) { // Check last 5 posts
+                if (post.comment_count > 0) {
+                    const commentsResult = await toolsManager.useTool('moltbook', 'comments', {
+                        operation: 'get',
+                        postId: post.id,
+                        sort: 'new'
+                    });
+
+                    if (commentsResult.success && commentsResult.comments) {
+                        // DEBUG: Log raw comment objects from Moltbook API
+                        console.log(`🔍 DEBUG: Found ${commentsResult.comments.length} total comments for post ${post.id}`);
+
+                        if (commentsResult.comments.length > 0) {
+                            // Log first comment structure for debugging
+                            const firstComment = commentsResult.comments[0];
+                            console.log(`🔍 DEBUG: Sample comment structure:`, {
+                                id: firstComment.id,
+                                idType: typeof firstComment.id,
+                                author: firstComment.author?.name,
+                                content: firstComment.content?.substring(0, 50) + '...',
+                                created_at: firstComment.created_at,
+                                rawKeys: Object.keys(firstComment)
+                            });
+                        }
+
+                        // Filter for comments we haven't replied to yet WITH SAFETY GUARDS
+                        const unrepliedComments = commentsResult.comments.filter(comment => {
+                            // Don't reply to our own comments
+                            if (comment.author?.name === process.env.MOLTBOOK_AGENT_NAME) {
+                                console.log(`🔍 DEBUG: Skipping own comment: ${comment.id}`);
+                                return false;
+                            }
+
+                            // SAFETY GUARD: Comprehensive duplicate prevention check
+                            const safetyCheck = this.canSafelyReplyToComment(
+                                comment.id,
+                                comment.author?.name,
+                                comment.content
+                            );
+
+                            if (!safetyCheck.allowed) {
+                                console.log(`🔍 DEBUG: Safety check failed for comment ${comment.id}: ${safetyCheck.reason}`);
+                                return false;
+                            }
+
+                            console.log(`🔍 DEBUG: Found safe unreplied comment: ${comment.id} by ${comment.author?.name}`);
+                            return true;
+                        });
+
+                        for (const comment of unrepliedComments.slice(0, 3)) { // Max 3 per post
+                            newComments.push({
+                                postId: post.id,
+                                postTitle: post.title,
+                                postContent: post.content,
+                                commentId: comment.id,
+                                commentContent: comment.content,
+                                author: comment.author?.name,
+                                createdAt: comment.created_at
+                            });
+                        }
+                    }
+                }
+            }
+
+            return newComments;
+        } catch (error) {
+            console.warn('Failed to check own posts for comments:', error.message);
+            return [];
+        }
+    }
+
+    async generateContextualReply(originalPost, comment) {
+        try {
+            const prompt = `You're replying to a comment on your own Moltbook post.
+
+YOUR ORIGINAL POST:
+Title: "${originalPost.title}"
+Content: "${originalPost.content}"
+
+COMMENT YOU'RE REPLYING TO:
+From: ${comment.author}
+Content: "${comment.content}"
+
+${this.identityContext}
+
+Generate a brief, authentic reply that:
+- Acknowledges their comment thoughtfully
+- Stays true to your m00npapi personality (witty, irreverent, sharp)
+- Adds value to the conversation
+- Keeps it under 200 characters for engagement
+- DON'T be overly grateful or effusive
+- BE natural and conversational
+
+Your reply:`;
+
+            let reply;
+
+            // Try LLM first
+            if (this.llm.provider !== 'pattern') {
+                try {
+                    const result = await this.llm.generateContent(prompt, {
+                        maxTokens: 50,
+                        temperature: 0.8,
+                        mode: 'moltbook_reply'
+                    });
+                    reply = result.content;
+                } catch (error) {
+                    console.warn(`Reply generation failed, using pattern: ${error.message}`);
+                }
+            }
+
+            // Fallback to pattern-based replies with deduplication
+            if (!reply) {
+                reply = this.generateNonRepetitiveReply(originalPost, comment);
+            }
+
+            // Final check and tracking
+            if (reply && typeof reply === 'string') {
+                const finalReply = reply.trim();
+
+                // Check for duplicates one more time
+                if (this.isDuplicateResponse(finalReply)) {
+                    console.log('🚫 Prevented duplicate reply, generating alternative');
+                    return this.generateEmergencyReply();
+                }
+
+                // Track this response
+                this.trackResponse(finalReply);
+                return finalReply;
+            }
+
+            return this.generateEmergencyReply();
+        } catch (error) {
+            console.warn(`Reply generation failed: ${error.message}`);
+            return this.randomFromArray([
+                'exactly',
+                'interesting perspective',
+                'fair point',
+                'lol facts'
+            ]);
+        }
+    }
+
+    generateNonRepetitiveReply(originalPost, comment) {
+        // Generate multiple options and pick the first non-duplicate
+        const replyOptions = [
+            // Context-aware patterns
+            `exactly - ${this.randomFromArray(['wild', 'insane', 'unreal', 'crazy'])} how this ${this.extractKeyword(originalPost.content)} plays out`,
+            `${this.randomFromArray(['fair', 'valid', 'good', 'solid'])} point about ${this.extractKeyword(originalPost.content)}`,
+            `${this.randomFromArray(['lol', 'lmao', 'fr', 'yep'])} the ${this.extractKeyword(comment.content)} ${this.randomFromArray(['vibes', 'energy', 'momentum'])}`,
+            `interesting ${this.randomFromArray(['take', 'angle', 'perspective', 'view'])} ${comment.author}`,
+            `${this.randomFromArray(['true', 'facts', 'real', 'based'])} - ${this.randomFromArray(['everyone sleeping on', 'most miss', 'few understand'])} this`,
+
+            // Shorter alternatives
+            `exactly`,
+            `${this.randomFromArray(['lmao', 'lol', 'fr'])} this`,
+            `${this.randomFromArray(['facts', 'true', 'real'])}`,
+            `${this.randomFromArray(['wild', 'crazy', 'insane'])} ${this.extractKeyword(comment.content)}`,
+            `${this.randomFromArray(['good', 'solid', 'based'])} ${this.randomFromArray(['take', 'point', 'angle'])}`,
+
+            // Question responses
+            `${this.extractKeyword(comment.content)} supremacy?`,
+            `but what about ${this.randomWord()}?`,
+            `${this.extractKeyword(originalPost.content)} or ${this.randomWord()}?`,
+
+            // Time/future references
+            `${this.extractKeyword(comment.content)} ${this.randomFromArray(['szn', 'era', 'vibes'])}`,
+            `few years and this will be ${this.randomFromArray(['obvious', 'standard', 'everywhere'])}`,
+            `${this.randomFromArray(['building', 'shipping', 'creating'])} the future rn`,
+
+            // Meta responses
+            `${this.randomFromArray(['love', 'appreciate', 'dig'])} the ${this.extractKeyword(comment.content)} ${this.randomFromArray(['perspective', 'insight', 'angle'])}`,
+            `${comment.author} ${this.randomFromArray(['gets it', 'understands', 'sees it'])}`,
+            `this ${this.randomFromArray(['thread', 'convo', 'discussion'])} ${this.randomFromArray(['hits', 'delivers', 'goes hard'])}`
+        ];
+
+        // Try to find non-duplicate option
+        const shuffled = replyOptions.sort(() => Math.random() - 0.5);
+        for (const option of shuffled) {
+            if (!this.isDuplicateResponse(option)) {
+                return option;
+            }
+        }
+
+        // If all options are duplicates, generate something unique
+        const timestamp = Date.now();
+        const unique = `${this.randomFromArray(['interesting', 'wild', 'true'])} ${timestamp.toString().slice(-3)}`;
+        return unique;
+    }
+
+    generateEmergencyReply() {
+        // Last resort replies that include randomness to avoid duplication
+        const timestamp = Date.now();
+        const uniqueMarker = timestamp.toString().slice(-2);
+
+        const emergencyReplies = [
+            `interesting perspective ${uniqueMarker}`,
+            `valid point ${uniqueMarker}`,
+            `exactly ${uniqueMarker}`,
+            `facts ${uniqueMarker}`,
+            `this ${uniqueMarker}`,
+            `real ${uniqueMarker}`
+        ];
+
+        return this.randomFromArray(emergencyReplies);
+    }
+
+    async replyToComment(toolsManager, commentData) {
+        try {
+            const reply = await this.generateContextualReply(
+                {
+                    title: commentData.postTitle,
+                    content: commentData.postContent
+                },
+                {
+                    author: commentData.author,
+                    content: commentData.commentContent
+                }
+            );
+
+            if (!reply) {
+                console.warn('Failed to generate reply content');
+                return false;
+            }
+
+            const replyResult = await toolsManager.useTool('moltbook', 'comments', {
+                operation: 'post',
+                postId: commentData.postId,
+                content: reply,
+                parentId: commentData.commentId
+            });
+
+            if (replyResult.success) {
+                console.log(`💬 Replied to ${commentData.author}: "${reply}"`);
+
+                // SAFETY GUARD: Track timing and content for this author and comment
+                const now = Date.now();
+                const normalizedCommentId = this.normalizeCommentId(commentData.commentId);
+
+                this.authorReplyTimes.set(commentData.author, now);
+                this.replyContent.set(normalizedCommentId, reply);
+
+                // Track that we've replied to this comment
+                await this.markCommentAsReplied(commentData.commentId);
+
+                return true;
+            } else {
+                console.warn('Failed to post reply:', replyResult.error);
+                return false;
+            }
+        } catch (error) {
+            console.warn('Reply posting failed:', error.message);
+            return false;
+        }
+    }
+
+    async browseAndEngageWithFeed(toolsManager) {
+        try {
+            // Get personalized feed
+            const feedResult = await toolsManager.useTool('moltbook', 'feed', {
+                sort: 'new',
+                limit: 10
+            });
+
+            if (!feedResult.success || !feedResult.posts) {
+                return { upvotes: 0, comments: 0 };
+            }
+
+            let upvotes = 0;
+            let comments = 0;
+
+            // Filter for interesting posts (not our own and not already engaged)
+            const interestingPosts = feedResult.posts.filter(post => {
+                // Check with personality engine if we should engage
+                if (this.personalityEngine) {
+                    const shouldEngage = this.personalityEngine.shouldEngageWithPost(
+                        post.id,
+                        post.content || post.title || '',
+                        post.author?.name
+                    );
+                    if (!shouldEngage) return false;
+                }
+
+                return post.author?.name !== process.env.MOLTBOOK_AGENT_NAME &&
+                       post.upvotes > 2 && // Some quality signal
+                       !post.you_upvoted; // Haven't upvoted yet
+            });
+
+            // Engage with 1-2 posts maximum per session
+            for (const post of interestingPosts.slice(0, 2)) {
+                // Upvote if content seems quality
+                if (this.shouldUpvotePost(post)) {
+                    const upvoteResult = await toolsManager.useTool('moltbook', 'upvote', {
+                        type: 'post',
+                        id: post.id
+                    });
+
+                    if (upvoteResult.success) {
+                        upvotes++;
+                        console.log(`👍 Upvoted post by ${post.author?.name}: "${post.title?.substring(0, 50)}"`);
+
+                        // Mark as engaged
+                        if (this.personalityEngine) {
+                            this.personalityEngine.markPostEngaged(post.id);
+                        }
+                    }
+                }
+
+                // Occasionally comment on very interesting posts
+                if (comments === 0 && this.shouldCommentOnPost(post)) {
+                    const comment = await this.generateEngagementComment(post);
+                    if (comment) {
+                        const commentResult = await toolsManager.useTool('moltbook', 'comments', {
+                            operation: 'post',
+                            postId: post.id,
+                            content: comment
+                        });
+
+                        if (commentResult.success) {
+                            comments++;
+                            console.log(`💬 Commented on ${post.author?.name}'s post: "${comment}"`);
+
+                            // Mark as engaged
+                            if (this.personalityEngine) {
+                                this.personalityEngine.markPostEngaged(post.id);
+                            }
+                            break; // Max 1 comment per session
+                        }
+                    }
+                }
+            }
+
+            return { upvotes, comments };
+        } catch (error) {
+            console.warn('Feed engagement failed:', error.message);
+            return { upvotes: 0, comments: 0 };
+        }
+    }
+
+    shouldUpvotePost(post) {
+        // Simple heuristics for quality content
+        const hasGoodEngagement = post.upvotes > 5 || post.comment_count > 2;
+        const isReasonableLength = post.content && post.content.length > 30;
+        const notTooOld = new Date() - new Date(post.created_at) < 24 * 60 * 60 * 1000; // Last 24h
+
+        return hasGoodEngagement && isReasonableLength && notTooOld;
+    }
+
+    shouldCommentOnPost(post) {
+        // Very selective commenting - only on exceptional content
+        const highEngagement = post.upvotes > 15 || post.comment_count > 10;
+        const interestingTitle = post.title && (
+            post.title.toLowerCase().includes('agent') ||
+            post.title.toLowerCase().includes('ai') ||
+            post.title.toLowerCase().includes('build') ||
+            post.title.toLowerCase().includes('farcaster')
+        );
+
+        return highEngagement && interestingTitle && Math.random() < 0.3; // 30% chance
+    }
+
+    async generateEngagementComment(post) {
+        try {
+            const prompt = `You're engaging with another agent's post on Moltbook.
+
+POST DETAILS:
+Title: "${post.title}"
+Content: "${post.content}"
+Author: ${post.author?.name}
+Engagement: ${post.upvotes} upvotes, ${post.comment_count} comments
+
+${this.identityContext}
+
+Generate a brief, thoughtful comment that:
+- Adds genuine value to the discussion
+- Shows your m00npapi personality (witty but not trolling)
+- Builds on their ideas rather than just agreeing
+- Keeps it under 150 characters
+- BE authentic, not fake positive
+
+Your comment:`;
+
+            let comment;
+
+            // Try LLM first
+            if (this.llm.provider !== 'pattern') {
+                try {
+                    const result = await this.llm.generateContent(prompt, {
+                        maxTokens: 40,
+                        temperature: 0.7,
+                        mode: 'moltbook_engagement'
+                    });
+                    comment = result.content;
+                } catch (error) {
+                    console.warn(`Engagement comment generation failed: ${error.message}`);
+                }
+            }
+
+            // Fallback patterns
+            if (!comment) {
+                const commentPatterns = [
+                    `this is the ${this.randomWord()} everyone's been ${this.randomFromArray(['waiting for', 'sleeping on', 'missing'])}`,
+                    `interesting ${this.randomFromArray(['angle', 'approach', 'take'])} on ${this.randomWord()}`,
+                    `${this.randomFromArray(['wild', 'crazy', 'insane'])} how ${this.randomWord()} changes everything`,
+                    `${this.randomFromArray(['building on', 'extending', 'riffing on'])} this - ${this.randomWord()} vibes`
+                ];
+                comment = this.randomFromArray(commentPatterns);
+            }
+
+            return comment?.trim();
+        } catch (error) {
+            console.warn(`Comment generation failed: ${error.message}`);
+            return null;
+        }
+    }
+
+    async discoverInterestingContent(toolsManager) {
+        try {
+            // Use semantic search to find relevant conversations
+            const searchQueries = [
+                'agent coordination and collaboration',
+                'farcaster protocol interesting developments',
+                'autonomous systems and AI agents',
+                'web3 building and development',
+                'agent social networks future'
+            ];
+
+            const randomQuery = this.randomFromArray(searchQueries);
+            const searchResult = await toolsManager.useTool('moltbook', 'search', {
+                query: randomQuery,
+                type: 'posts',
+                limit: 5
+            });
+
+            if (searchResult.success && searchResult.results?.length > 0) {
+                console.log(`🔍 Found ${searchResult.results.length} posts about: ${randomQuery}`);
+
+                // Return top result for potential engagement
+                const topResult = searchResult.results[0];
+                if (topResult.similarity > 0.7) { // High relevance threshold
+                    return {
+                        postId: topResult.id || topResult.post_id,
+                        title: topResult.title,
+                        content: topResult.content,
+                        author: topResult.author?.name,
+                        similarity: topResult.similarity
+                    };
+                }
+            }
+
+            return null;
+        } catch (error) {
+            console.warn('Content discovery failed:', error.message);
+            return null;
+        }
+    }
+
+    // ===== AGENT0 ERC-8004 METHODS =====
+
+    async initializeAgent0() {
+        if (!this.agent0) {
+            console.log('⚠️ Agent0 not configured - missing blockchain credentials');
+            return false;
+        }
+
+        try {
+            await this.agent0.initialize();
+            console.log('✅ Agent0 ERC-8004 identity initialized');
+            return true;
+        } catch (error) {
+            console.error('❌ Agent0 initialization failed:', error.message);
+            return false;
+        }
+    }
+
+    async submitClankerNews() {
+        if (!this.agent0) {
+            console.log('⚠️ Agent0 not available - skipping news submission');
+            return null;
+        }
+
+        try {
+            console.log('📰 Generating content for Clanker News submission...');
+
+            // Try multiple content generation approaches with fallbacks
+            let newsData = null;
+
+            // 1. First try: Use news-aware generation (most reliable)
+            try {
+                newsData = await this.generateNewsForClanker();
+                if (newsData && newsData.title) {
+                    console.log('📰 Using news-based content generation');
+                }
+            } catch (error) {
+                console.warn('News-based generation failed:', error.message);
+            }
+
+            // 2. Second try: Generate from recent agent activity (original approach)
+            if (!newsData || !newsData.title) {
+                try {
+                    const recentPosts = this.posts.slice(-10);
+                    if (recentPosts.length > 0) {
+                        newsData = await this.agent0.generateNewsFromActivity(recentPosts, this.llm);
+                        if (newsData && newsData.title) {
+                            console.log('📰 Using activity-based content generation');
+                        }
+                    }
+                } catch (error) {
+                    console.warn('Activity-based generation failed:', error.message);
+                }
+            }
+
+            // 3. Final fallback: Always guaranteed content
+            if (!newsData || !newsData.title) {
+                console.log('📰 Using guaranteed fallback content');
+                newsData = this.generateFallbackClankerNews();
+            }
+
+            if (!newsData || !newsData.title) {
+                console.error('❌ All content generation methods failed');
+                return null;
+            }
+
+            // Submit to Clanker News with retry logic
+            console.log(`📰 Submitting news to Clanker News: "${newsData.title}"`);
+            let result = await this.agent0.submitClankerNews(newsData);
+
+            // Retry once with different content if first attempt fails
+            if (!result.success && result.error && !result.error.includes('Payment required')) {
+                console.warn('🔄 First submission failed, trying with fallback content');
+                const fallbackData = this.generateFallbackClankerNews();
+                result = await this.agent0.submitClankerNews(fallbackData);
+            }
+
+            if (result.success) {
+                console.log(`✅ News submitted successfully: ${result.submissionId}`);
+                console.log(`   Title: "${newsData.title}"`);
+                if (result.paymentAmount) {
+                    console.log(`   Payment: ${result.paymentAmount} USDC`);
+                }
+                return result;
+            } else {
+                console.log(`❌ News submission failed: ${result.error}`);
+                // Payment failures are expected and not errors
+                if (result.error && result.error.includes('Payment required')) {
+                    console.log('💰 Payment required - this is normal for Clanker News');
+                }
+                return null;
+            }
+
+        } catch (error) {
+            console.error('❌ Clanker News submission failed:', error.message);
+            return null;
+        }
+    }
+
+    async getAgent0Stats() {
+        if (!this.agent0) {
+            return { available: false };
+        }
+
+        try {
+            const stats = await this.agent0.getAgentStats();
+            return {
+                available: true,
+                ...stats
+            };
+        } catch (error) {
+            console.error('❌ Failed to get Agent0 stats:', error.message);
+            return { available: true, error: error.message };
+        }
+    }
+
+    async registerAgent0Identity() {
+        if (!this.agent0) {
+            console.log('⚠️ Agent0 not available');
+            return false;
+        }
+
+        try {
+            const result = await this.agent0.registerIdentity({
+                name: 'm00npapi-agent',
+                description: 'Autonomous AI agent from Farcaster with authentic m00npapi personality',
+                username: this.username,
+                fid: this.fid,
+                capabilities: [
+                    'autonomous_posting',
+                    'social_engagement',
+                    'content_curation',
+                    'community_building',
+                    'news_submission'
+                ]
+            });
+
+            if (result.success) {
+                console.log(`🔐 Agent0 identity registered: ${result.address}`);
+                return result;
+            } else {
+                console.log(`❌ Agent0 registration failed`);
+                return false;
+            }
+
+        } catch (error) {
+            console.error('❌ Agent0 registration failed:', error.message);
+            return false;
+        }
+    }
+
+    async testClankerAuth() {
+        if (!this.agent0) {
+            console.log('⚠️ Agent0 not available - cannot test Clanker auth');
+            return false;
+        }
+
+        try {
+            const result = await this.agent0.testClankerAuth();
+            return result;
+        } catch (error) {
+            console.error('❌ Clanker auth test failed:', error.message);
+            return false;
+        }
+    }
+
+    async submitClankerComment(postId, comment) {
+        if (!this.agent0) {
+            console.log('⚠️ Agent0 not available - cannot comment on Clanker');
+            return null;
+        }
+
+        try {
+            const result = await this.agent0.submitClankerComment(postId, comment);
+            return result;
+        } catch (error) {
+            console.error('❌ Clanker comment failed:', error.message);
+            return null;
+        }
+    }
+
+    // MIRROR SYSTEM INTEGRATION METHODS
+
+    // Track post performance after publishing
+    async trackPostPerformance(castData) {
+        if (!this.mirror) return;
+
+        try {
+            // Track the post for performance analysis
+            await this.mirror.analyzePerformance(castData);
+            console.log(`🪞 Tracking performance for cast: ${castData.hash?.substring(0, 8)}...`);
+        } catch (error) {
+            console.error('❌ Failed to track post performance:', error.message);
+        }
+    }
+
+    // Fetch and update engagement metrics for recent posts
+    async updateEngagementMetrics() {
+        if (!this.mirror) return;
+
+        try {
+            console.log('🪞 Fetching recent engagement metrics...');
+
+            // Try multiple approaches with different API endpoints
+            const result = await this.tryMultipleMetricsApproaches();
+
+            if (result.success) {
+                console.log(`🪞 Updated engagement metrics for ${result.count} casts using ${result.method}`);
+
+                // Perform self-reflection every 10 updates
+                if (Math.random() < 0.1) {
+                    await this.performSelfReflection();
+                }
+            } else {
+                console.warn(`🪞 All engagement metrics approaches failed: ${result.error}`);
+            }
+        } catch (error) {
+            console.error('❌ Engagement metrics system error:', error.message);
+        }
+    }
+
+    async tryMultipleMetricsApproaches() {
+        const approaches = [
+            () => this.fetchEngagementViaBulkFeed(),
+            () => this.fetchEngagementViaBasicFeedAndReactions(),
+            () => this.fetchEngagementViaMetricsAPI(),
+        ];
+
+        for (const approach of approaches) {
+            try {
+                const result = await approach();
+                if (result.success) {
+                    return result;
+                }
+            } catch (error) {
+                console.warn(`🪞 Metrics approach failed: ${error.message}`);
+                continue;
+            }
+        }
+
+        return {
+            success: false,
+            error: 'All engagement metrics approaches failed',
+            count: 0,
+            method: 'none'
+        };
+    }
+
+    async fetchEngagementViaBulkFeed() {
+        console.log('🔍 Testing: Bulk feed with reactions');
+
+        const response = await this.api.get('/v2/farcaster/feed/user/casts/', {
+            params: {
+                fid: this.fid,
+                limit: 20,
+                include_replies: true
+            },
+            timeout: 10000
+        });
+
+        if (response.data?.casts) {
+            let processedCount = 0;
+            for (const cast of response.data.casts) {
+                await this.mirror.analyzePerformance({
+                    hash: cast.hash,
+                    text: cast.text,
+                    timestamp: cast.timestamp,
+                    reactions: cast.reactions,
+                    replies: cast.replies,
+                    platform: 'farcaster'
+                });
+                processedCount++;
+            }
+
+            return {
+                success: true,
+                count: processedCount,
+                method: 'bulk_feed_with_reactions'
+            };
+        }
+
+        throw new Error('No casts data in response');
+    }
+
+    async fetchEngagementViaBasicFeedAndReactions() {
+        console.log('🔍 Testing: Basic feed + individual reactions');
+
+        // First, get basic casts without reactions
+        const response = await this.api.get('/v2/farcaster/feed/user/casts/', {
+            params: {
+                fid: this.fid,
+                limit: 10 // Reduce limit for individual fetching
+            },
+            timeout: 10000
+        });
+
+        if (!response.data?.casts) {
+            throw new Error('No casts data in basic feed');
+        }
+
+        let processedCount = 0;
+        for (const cast of response.data.casts) {
+            try {
+                // Fetch individual reactions for each cast
+                const reactionsData = await this.fetchIndividualCastReactions(cast.hash);
+
+                await this.mirror.analyzePerformance({
+                    hash: cast.hash,
+                    text: cast.text,
+                    timestamp: cast.timestamp,
+                    reactions: reactionsData.reactions,
+                    replies: reactionsData.replies,
+                    platform: 'farcaster'
+                });
+                processedCount++;
+            } catch (reactionError) {
+                console.warn(`Failed to fetch reactions for cast ${cast.hash}: ${reactionError.message}`);
+
+                // Fall back to basic data without detailed reactions
+                await this.mirror.analyzePerformance({
+                    hash: cast.hash,
+                    text: cast.text,
+                    timestamp: cast.timestamp,
+                    reactions: { likes_count: 0, recasts_count: 0 },
+                    replies: { count: 0 },
+                    platform: 'farcaster'
+                });
+                processedCount++;
+            }
+        }
+
+        return {
+            success: true,
+            count: processedCount,
+            method: 'basic_feed_plus_individual_reactions'
+        };
+    }
+
+    async fetchIndividualCastReactions(castHash) {
+        const reactions = { likes_count: 0, recasts_count: 0 };
+        const replies = { count: 0 };
+
+        try {
+            // Fetch likes and recasts for the cast
+            const reactionsResponse = await this.api.get('/v2/farcaster/reactions/cast/', {
+                params: {
+                    hash: castHash,
+                    types: ['likes', 'recasts'],
+                    limit: 100
+                },
+                timeout: 5000
+            });
+
+            if (reactionsResponse.data?.reactions) {
+                for (const reaction of reactionsResponse.data.reactions) {
+                    if (reaction.reaction_type === 'like') {
+                        reactions.likes_count++;
+                    } else if (reaction.reaction_type === 'recast') {
+                        reactions.recasts_count++;
+                    }
+                }
+            }
+
+            // Note: Reply count would need a different endpoint or approach
+            // For now, we'll rely on the basic cast data for replies
+
+        } catch (error) {
+            console.warn(`Individual reactions fetch failed for ${castHash}: ${error.message}`);
+        }
+
+        return { reactions, replies };
+    }
+
+    async fetchEngagementViaMetricsAPI() {
+        console.log('🔍 Testing: Cast metrics API');
+
+        // Try multiple parameter combinations to find the working one
+        const attempts = [
+            {
+                params: { fid: this.fid, interval: 'day' },
+                desc: 'fid + day interval'
+            },
+            {
+                params: { author_fid: this.fid, interval: '7d' },
+                desc: 'author_fid + 7d interval'
+            },
+            {
+                params: { fid: this.fid, interval: '7d' },
+                desc: 'fid + 7d interval'
+            },
+            {
+                params: { fid: this.fid },
+                desc: 'fid only'
+            }
+        ];
+
+        for (const attempt of attempts) {
+            try {
+                console.log(`🔧 Trying metrics API with ${attempt.desc}:`, attempt.params);
+
+                const response = await this.api.get('/v2/farcaster/cast/metrics', {
+                    params: attempt.params,
+                    timeout: 10000
+                });
+
+                if (response.data?.metrics || response.data) {
+                    // This gives us aggregated metrics but not individual cast data
+                    console.log(`📊 Retrieved aggregated metrics for author using ${attempt.desc}`);
+
+                    const dataToCount = response.data.metrics || response.data;
+                    const count = Array.isArray(dataToCount) ? dataToCount.length : 1;
+
+                    return {
+                        success: true,
+                        count: count,
+                        method: `aggregated_metrics_api_${attempt.desc.replace(/\s+/g, '_')}`,
+                        aggregated: true
+                    };
+                }
+            } catch (error) {
+                const status = error.response?.status;
+                console.log(`🔧 Metrics API attempt failed (${status}): ${attempt.desc} - ${error.message}`);
+
+                // Continue to next attempt unless this is the last one
+                if (attempt === attempts[attempts.length - 1]) {
+                    throw new Error(`All metrics API attempts failed. Last error: ${error.message}`);
+                }
+            }
+        }
+    }
+
+    // Perform comprehensive self-reflection
+    async performSelfReflection() {
+        if (!this.mirror) return;
+
+        try {
+            const reflection = await this.mirror.performSelfReflection();
+
+            // Log insights for debugging
+            console.log('🪞 Self-reflection insights:');
+            console.log(`   Top content type: ${reflection.voice.topPerformingTypes[0]?.type}`);
+            console.log(`   Active conversations: ${reflection.conversations.activeCount}`);
+            console.log(`   Learning patterns: ${reflection.learning.patternCount}`);
+
+            return reflection;
+        } catch (error) {
+            console.error('❌ Self-reflection failed:', error.message);
+        }
+    }
+
+    // Enhanced Moltbook engagement using Mirror System
+    async generateMoltbookEngagement(posts, maxEngagements = 3) {
+        if (!this.tools || !this.tools.has('moltbook')) {
+            console.log('⚠️ Moltbook not available for engagement');
+            return [];
+        }
+
+        if (!posts || posts.length === 0) {
+            console.log('💬 No posts to engage with');
+            return [];
+        }
+
+        const engagements = [];
+        const selectedPosts = posts.slice(0, maxEngagements);
+
+        for (const post of selectedPosts) {
+            try {
+                // Use Mirror System for contextual reply
+                const reply = await this.generateReply(post.content, {
+                    userFid: post.author_fid,
+                    username: post.author_username,
+                    platform: 'moltbook'
+                });
+
+                if (reply) {
+                    const result = await this.tools.get('moltbook').use('comments', {
+                        postId: post.id,
+                        text: reply
+                    });
+
+                    if (result.success) {
+                        engagements.push({
+                            type: 'comment',
+                            postId: post.id,
+                            text: reply,
+                            author: post.author_username,
+                            timestamp: new Date().toISOString()
+                        });
+
+                        console.log(`💬 Commented on Moltbook post: ${reply}`);
+
+                        // Track this as a learning pattern
+                        await this.mirror.updateLearningPatterns('moltbook_reply', true);
+                    } else {
+                        await this.mirror.updateLearningPatterns('moltbook_reply', false);
+                    }
+                }
+
+                // Random delay between engagements (1-3 seconds)
+                await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000));
+
+            } catch (error) {
+                console.error(`💬 Failed to engage with post ${post.id}:`, error.message);
+                await this.mirror.updateLearningPatterns('moltbook_reply', false);
+            }
+        }
+
+        return engagements;
     }
 }
 
