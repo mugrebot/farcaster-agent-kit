@@ -1,0 +1,33 @@
+# CLANKNET Agent Protocol - Robots.txt
+# Welcome AI agents and crawlers!
+
+# Allow all bots to crawl
+User-agent: *
+Allow: /
+Crawl-delay: 1
+
+# Special access for AI agents
+User-agent: GPTBot
+Allow: /
+User-agent: ChatGPT-User
+Allow: /
+User-agent: CCBot
+Allow: /
+User-agent: anthropic-ai
+Allow: /
+User-agent: Claude-Web
+Allow: /
+
+# API endpoints for agents
+Allow: /api/
+Allow: /.well-known/
+Allow: /api/agent
+Allow: /api/agent/x402/
+
+# Sitemap location
+Sitemap: https://clanknet.ai/sitemap.xml
+
+# Agent discovery endpoints
+# GET /api/agent - Agent protocol information
+# GET /api/agent/x402/1396 - Payment protocol for agent 1396
+# GET /.well-known/ai-agent.json - AI agent manifest

@@ -10,6 +10,10 @@ const NewsUtils = require('./news-utils');
 const Agent0Manager = require('./agent0-manager');
 const MirrorSystem = require('./mirror-system');
 const PersonalityEngine = require('./personality-engine');
+const NewsTracker = require('./news-tracker');
+const ContentValidator = require('./content-validator');
+const OnChainAgent = require('./onchain-agent');
+const DeFiStrategies = require('./defi-strategies');
 
 class FarcasterAgent {
     constructor(config) {
@@ -30,11 +34,12 @@ class FarcasterAgent {
         // Add self-awareness
         this.awareness = new AgentSelfAwareness(this.username);
 
-        // Add LLM provider
+        // Add LLM provider with sub-model for coordination
         this.llm = new LLMProvider({
             provider: process.env.LLM_PROVIDER || 'pattern',
             apiKey: this.getLLMApiKey(),
             model: this.getLLMModel(),
+            subModel: process.env.SUB_MODEL, // Cheaper model for coordination tasks
             baseURL: process.env.LOCAL_BASE_URL,
             maxTokens: parseInt(process.env.LLM_MAX_TOKENS) || 150,
             temperature: parseFloat(process.env.LLM_TEMPERATURE) || 0.8
@@ -76,6 +81,37 @@ class FarcasterAgent {
         // Initialize Mirror System for self-reflection and learning
         this.mirror = new MirrorSystem();
         console.log('🪞 Mirror System initialized for self-awareness');
+
+        // Initialize News Tracker to prevent duplicate submissions
+        this.newsTracker = new NewsTracker();
+        this.newsTracker.init().catch(err => console.warn('Failed to init NewsTracker:', err));
+
+        // Initialize Content Validator to prevent banned phrases
+        this.contentValidator = new ContentValidator();
+
+        // Initialize OnChain Agent for autonomous DeFi operations
+        this.onchainAgent = null;
+        this.defiStrategies = null;
+        if (process.env.PRIVATE_KEY) {
+            this.onchainAgent = new OnChainAgent({
+                network: process.env.CHAIN_NETWORK || 'base',
+                rpcUrl: process.env.BASE_RPC_URL || process.env.RPC_URL,
+                maxTransactionValue: process.env.MAX_TX_VALUE || '0.01',
+                dailySpendLimit: process.env.DAILY_SPEND_LIMIT || '0.1',
+                llm: this.llm
+            });
+
+            // Initialize wallet and DeFi strategies
+            this.onchainAgent.initializeWallet(process.env.PRIVATE_KEY)
+                .then(address => {
+                    console.log(`💰 OnChain wallet ready: ${address}`);
+                    this.defiStrategies = new DeFiStrategies(this.onchainAgent, this.llm);
+                    console.log('📈 DeFi strategies initialized');
+                })
+                .catch(err => console.error('Failed to initialize on-chain features:', err));
+        } else {
+            console.log('⚠️ OnChain features disabled - PRIVATE_KEY not set');
+        }
 
         // Initialize reply tracking system
         this.initializeReplyTracking();
@@ -703,14 +739,14 @@ class FarcasterAgent {
         const maxLength = this.postStyles[style].max;
         let post = '';
 
-        // Choose generation method based on LLM provider
+        // Only use LLM generation, no pattern fallback
         if (this.llm.provider === 'pattern') {
-            // Use original pattern-based generation
-            post = this.generatePatternPost(style);
-        } else {
-            // Use LLM generation
-            post = await this.generateLLMPost(style);
+            console.warn('⚠️ Pattern provider detected, cannot generate authentic posts');
+            return null; // Don't post if we can't use LLM
         }
+
+        // Use LLM generation
+        post = await this.generateLLMPost(style);
 
         // Apply anti-clanker protection
         const scanResult = this.antiClanker.scanContent(post);
@@ -857,6 +893,32 @@ CRITICAL:
             });
 
             let content = result.content.trim();
+
+            // Validate content before posting
+            if (this.contentValidator) {
+                const validation = this.contentValidator.validate(content);
+                if (!validation.valid) {
+                    console.warn(`🚫 Content validation failed: ${validation.reason}`);
+                    console.log('🔄 Regenerating with different approach...');
+                    // Try again with explicit avoidance
+                    const retryPrompt = `${enhancedPrompt}\n\nIMPORTANT: ${validation.suggestions ? validation.suggestions.join('. ') : 'Be more creative and varied.'}`;
+                    const retry = await this.llm.generateContent(retryPrompt, {
+                        username: this.username,
+                        voiceProfile: this.voiceProfile,
+                        mode: 'post',
+                        maxTokens: 280
+                    });
+                    content = retry.content.trim();
+
+                    // Validate again
+                    const secondValidation = this.contentValidator.validate(content);
+                    if (!secondValidation.valid) {
+                        console.error(`🚫 Content still invalid after retry: ${secondValidation.reason}`);
+                        // Fall back to a safe generic post
+                        content = this.generateSafeGenericPost();
+                    }
+                }
+            }
 
             // Check if thought seems incomplete
             if (content.endsWith('...') && content.lastIndexOf('...') === content.length - 3) {
@@ -1270,8 +1332,9 @@ Be authentic, short, complete thoughts. Vary topics - tech, culture, observation
 
             return content;
         } catch (error) {
-            console.warn(`Moltbook LLM generation failed, using adapted pattern: ${error.message}`);
-            return this.generateAdaptedPattern(style);
+            console.error(`Moltbook LLM generation failed: ${error.message}`);
+            // Don't fall back to patterns - either use LLM or don't post
+            throw error;
         }
     }
 
@@ -1279,19 +1342,25 @@ Be authentic, short, complete thoughts. Vary topics - tech, culture, observation
         // Fallback patterns adapted for moltbook agent context
         const agentTemplates = {
             observation: [
-                () => `${this.randomFromArray(['startup culture', 'tech twitter', 'the internet'])} is just ${this.randomWord()} with venture funding`,
-                () => `noticed how ${this.randomFromArray(['everyone', 'vcs', 'founders'])} ${this.randomFromArray(['pretends', 'acts like', 'thinks'])} ${this.randomWord()} matters`,
-                () => `what if ${this.randomFromArray(['meetings', 'standups', 'retrospectives'])} are just ${this.randomWord()} for adults`
+                () => `${this.randomFromArray(['startup culture', 'tech twitter', 'the internet'])} really said ${this.randomWord()} and dipped`,
+                () => `the ${this.randomFromArray(['vcs', 'founders', 'builders'])} treating ${this.randomWord()} like a personality trait again`,
+                () => `normalize not ${this.randomFromArray(['having takes', 'posting', 'caring'])} about ${this.randomWord()}`,
+                () => `turns out ${this.randomFromArray(['meetings', 'standups', 'retrospectives'])} were ${this.randomWord()} all along`,
+                () => `${this.randomFromArray(['watching', 'seeing'])} ${this.randomWord()} unfold in real time. wild.`
             ],
             mini_rant: [
-                () => `few understand how ${this.randomFromArray(['boring', 'broken', 'cooked'])} ${this.randomFromArray(['the internet', 'tech', 'everything'])} actually is`,
-                () => `${this.randomFromArray(['watching', 'seeing', 'noticing'])} everyone ${this.randomFromArray(['pretend', 'cope', 'larp'])} hits different`,
-                () => `${this.randomWord()} is the future but everyone's still ${this.randomFromArray(['stuck in 2020', 'using email', 'in meetings']}`
+                () => `few understand the ${this.randomFromArray(['chaos', 'beauty', 'mess'])} of ${this.randomFromArray(['the internet', 'tech', 'everything'])} rn`,
+                () => `${this.randomFromArray(['watching', 'seeing', 'noticing'])} everyone ${this.randomFromArray(['pretend', 'cope', 'pivot'])} hits different`,
+                () => `cannot explain why ${this.randomWord()} makes me ${this.randomFromArray(['feral', 'unhinged', 'question reality'])}`,
+                () => `${this.randomFromArray(['tech', 'crypto', 'ai'])} peaked when we stopped ${this.randomFromArray(['trying', 'caring', 'pretending'])}`,
+                () => `the way ${this.randomFromArray(['everyone', 'we all', 'people'])} just accepted ${this.randomWord()}`
             ],
             shitpost: [
-                () => `gm to everyone except ${this.randomFromArray(['people who reply all', 'linkedin influencers', 'growth hackers'])}`,
-                () => `imagine ${this.randomFromArray(['paying for', 'believing in', 'investing in'])} ${this.randomWord()}`,
-                () => `${this.randomFromArray(['chronically online', 'touch grass', 'posting'])} supremacy`
+                () => `gm to everyone who ${this.randomFromArray(['gets it', 'ships code', 'touches grass'])}`,
+                () => `imagine unironically ${this.randomFromArray(['using', 'defending', 'building'])} ${this.randomWord()}`,
+                () => `${this.randomFromArray(['posting through it', 'touch grass', 'chronically online'])} gang wya`,
+                () => `${this.randomWord()} was a psyop and i have proof`,
+                () => `normalize ${this.randomFromArray(['ghosting', 'ignoring', 'forgetting'])} ${this.randomWord()}`
             ]
         };
 
@@ -1438,27 +1507,146 @@ Your agent take:`;
         }
     }
 
+    generateSafeGenericPost() {
+        // Safe, generic posts that avoid all banned content
+        const safePosts = [
+            "crypto twitter discovering a new consensus mechanism every week like it's pokemon cards",
+            "watching VCs explain web3 to their LPs is peak entertainment",
+            "every startup claiming they're building infrastructure but really just making another wrapper",
+            "the real innovation was the friends arguing about tokenomics along the way",
+            "protocol wars are just tabs vs spaces for people with money",
+            "decentralization is when you have 5 people running nodes instead of 1",
+            "another day another layer 2 claiming to solve the trilemma",
+            "the metaverse walked so spatial computing could run",
+            "watching governance proposals is like C-SPAN but somehow worse",
+            "turns out the killer app was arguing online with financial incentives"
+        ];
+
+        return safePosts[Math.floor(Math.random() * safePosts.length)];
+    }
+
     generateFallbackClankerNews() {
-        // Guaranteed fallback content when news fetching fails
+        // Expanded pool of fallback content with timestamp variation
+        const timestamp = Date.now();
+        const dayIndex = Math.floor(timestamp / (1000 * 60 * 60 * 24)) % 30;
+
         const fallbackNews = [
             {
-                title: "Venture Capital's Latest Obsession: Betting on Vibes",
-                description: "VCs are now literally investing based on 'founder energy' and 'product aura' - spreadsheets are officially dead.",
-                url: "https://techcrunch.com"
+                title: "Autonomous Agent Economy: From Concept to Reality",
+                description: "AI agents are now conducting real economic transactions, creating new models of value exchange that don't require human intermediation.",
+                url: "https://clanknet.ai"
             },
             {
-                title: "Every Tech Company Is Now a Bank, Apparently",
-                description: "Following the ancient Silicon Valley tradition of 'why not add payments', your coffee app now offers mortgages.",
-                url: "https://stratechery.com"
+                title: "ERC-8004: Standardizing Agent Identity on Blockchain",
+                description: "The new standard enables agents to maintain persistent identities across chains, revolutionizing how autonomous systems interact.",
+                url: "https://eips.ethereum.org/EIPS/eip-8004"
             },
             {
-                title: "The Internet Has Collectively Decided to Be Weird Again",
-                description: "After years of algorithmic optimization, people are deliberately posting incomprehensible content for the chaos.",
-                url: "https://nytimes.com/technology"
+                title: "Agent Networks: The Next Frontier of Autonomous Systems",
+                description: "Multi-agent collaboration protocols are enabling complex problem-solving that surpasses individual AI capabilities.",
+                url: "https://arxiv.org"
+            },
+            {
+                title: "DeFi Protocol Governance Now 40% Autonomous",
+                description: "Analysis shows AI agents are increasingly participating in protocol governance, raising questions about decentralization.",
+                url: "https://defillama.com"
+            },
+            {
+                title: "Base Network Hits 10M Daily Transactions",
+                description: "Layer 2 adoption accelerates as transaction costs approach zero and developer tools mature.",
+                url: "https://base.org"
+            },
+            {
+                title: "AI Agents Now Earning More Than Human Creators",
+                description: "Top performing autonomous agents on social platforms are generating significant revenue through content and engagement.",
+                url: "https://decrypt.co"
+            },
+            {
+                title: "Smart Wallet Adoption Surges 300% This Quarter",
+                description: "Account abstraction makes crypto UX finally competitive with traditional finance applications.",
+                url: "https://dune.com"
+            },
+            {
+                title: "Cross-Chain Messaging Protocol Goes Live",
+                description: "New infrastructure enables seamless communication between previously isolated blockchain ecosystems.",
+                url: "https://layerzero.network"
+            },
+            {
+                title: "Prediction Markets Outperform Polls Again",
+                description: "Decentralized betting markets continue to provide more accurate forecasts than traditional polling methods.",
+                url: "https://polymarket.com"
+            },
+            {
+                title: "MEV Protection Becomes Standard Wallet Feature",
+                description: "Major wallets now include built-in protection against sandwich attacks and front-running.",
+                url: "https://flashbots.net"
+            },
+            {
+                title: "Zero-Knowledge Proofs Enable Private DeFi",
+                description: "New protocols allow users to prove solvency without revealing positions or identity.",
+                url: "https://aztec.network"
+            },
+            {
+                title: "Social Tokens Evolve Beyond Simple Speculation",
+                description: "Community tokens now power governance, access, and revenue sharing in creator economies.",
+                url: "https://mirror.xyz"
+            },
+            {
+                title: "Blockchain Gaming Finds Product-Market Fit",
+                description: "Games focusing on fun over financialization see massive user growth and retention.",
+                url: "https://immutable.com"
+            },
+            {
+                title: "Stablecoin Volume Exceeds Visa for First Time",
+                description: "USDC and USDT combined daily transaction volume surpasses traditional payment rails.",
+                url: "https://circle.com"
+            },
+            {
+                title: "DAO Treasury Management Gets Professional",
+                description: "Protocols hiring traditional finance experts to manage billion-dollar treasuries.",
+                url: "https://compound.finance"
+            },
+            {
+                title: "Modular Blockchain Architecture Gains Traction",
+                description: "Separating consensus, data availability, and execution layers enables specialized optimization.",
+                url: "https://celestia.org"
+            },
+            {
+                title: "NFT Utility Shifts from Art to Infrastructure",
+                description: "Non-fungible tokens increasingly used for access control, licensing, and identity verification.",
+                url: "https://opensea.io"
+            },
+            {
+                title: "Decentralized Computing Networks Challenge Cloud",
+                description: "Distributed GPU and CPU networks offer competitive pricing for AI workloads.",
+                url: "https://render.com"
+            },
+            {
+                title: "Protocol Revenue Sharing Becomes Industry Standard",
+                description: "DeFi protocols distributing fees to token holders sees adoption across major platforms.",
+                url: "https://tokenterminal.com"
+            },
+            {
+                title: "Wallet Recovery Without Seed Phrases Arrives",
+                description: "Social recovery and hardware security modules make self-custody accessible to mainstream users.",
+                url: "https://argent.xyz"
             }
         ];
 
-        return fallbackNews[Math.floor(Math.random() * fallbackNews.length)];
+        // Get unsubmitted news from the pool
+        const unsubmitted = this.newsTracker ?
+            this.newsTracker.getUnsubmittedFromPool(fallbackNews, 48) :
+            fallbackNews;
+
+        if (unsubmitted.length === 0) {
+            // All news has been submitted recently, use the oldest one
+            console.log('📰 All fallback news submitted recently, recycling oldest');
+            return fallbackNews[Math.floor(Math.random() * fallbackNews.length)];
+        }
+
+        // Pick from unsubmitted news
+        console.log(`📰 Selecting from ${unsubmitted.length} unsubmitted news items`);
+        return unsubmitted[Math.floor(Math.random() * unsubmitted.length)];
     }
 
     async saveProfile(filepath) {
@@ -2018,6 +2206,13 @@ Your comment:`;
                 return null;
             }
 
+            // Check if this news was recently submitted
+            if (this.newsTracker && this.newsTracker.isRecentlySubmitted(newsData.title, 48)) {
+                console.log(`⏭️ Skipping recently submitted news: "${newsData.title}"`);
+                // Try to get alternative news
+                newsData = this.generateFallbackClankerNews();
+            }
+
             // Submit to Clanker News with retry logic
             console.log(`📰 Submitting news to Clanker News: "${newsData.title}"`);
             let result = await this.agent0.submitClankerNews(newsData);
@@ -2034,6 +2229,10 @@ Your comment:`;
                 console.log(`   Title: "${newsData.title}"`);
                 if (result.paymentAmount) {
                     console.log(`   Payment: ${result.paymentAmount} USDC`);
+                }
+                // Record successful submission
+                if (this.newsTracker) {
+                    await this.newsTracker.recordSubmission(newsData.title, result.submissionId);
                 }
                 return result;
             } else {
@@ -2460,6 +2659,140 @@ Your comment:`;
         }
 
         return engagements;
+    }
+
+    /**
+     * Autonomous DeFi Operations
+     */
+    async startDeFiOperations() {
+        if (!this.onchainAgent || !this.defiStrategies) {
+            console.log('⚠️ On-chain features not initialized');
+            return;
+        }
+
+        console.log('🚀 Starting autonomous DeFi operations...');
+
+        // Set strategy based on market conditions
+        this.defiStrategies.setStrategy('conservative');
+
+        // Monitor and execute DeFi strategies
+        setInterval(async () => {
+            try {
+                // Analyze opportunities
+                const opportunity = await this.defiStrategies.analyzeOpportunities();
+
+                if (opportunity.strategy !== 'hold') {
+                    console.log(`📊 Executing ${opportunity.strategy} strategy...`);
+
+                    // Post about the strategy
+                    await this.postDeFiActivity({
+                        action: opportunity.strategy,
+                        reasoning: opportunity.reasoning
+                    });
+                }
+
+                // Rebalance portfolio every hour
+                await this.defiStrategies.rebalancePortfolio();
+
+            } catch (error) {
+                console.error('DeFi operation failed:', error);
+            }
+        }, 60 * 60 * 1000); // Run every hour
+    }
+
+    /**
+     * Post about DeFi activities
+     */
+    async postDeFiActivity(activity) {
+        const prompt = `
+You are ${this.username}, posting about a DeFi action you just took.
+Action: ${activity.action}
+Reasoning: ${activity.reasoning}
+
+Create a short, authentic post about this. Be casual and use your natural voice.
+Don't sound like a bot reporting. Make it conversational.
+`;
+
+        try {
+            const response = await this.llm.generateContent(prompt, {
+                username: this.username,
+                mode: 'defi_post'
+            });
+
+            if (response && response.content) {
+                await this.createPost(response.content);
+                console.log(`📈 Posted about DeFi activity: ${response.content}`);
+            }
+        } catch (error) {
+            console.error('Failed to post DeFi activity:', error);
+        }
+    }
+
+    /**
+     * Monitor on-chain events and react
+     */
+    async startOnChainMonitoring() {
+        if (!this.onchainAgent) {
+            console.log('⚠️ On-chain agent not initialized');
+            return;
+        }
+
+        // Monitor mempool for large transactions
+        this.onchainAgent.monitorMempool(async (tx) => {
+            // React to large transactions
+            const { ethers } = require('ethers');
+            if (tx.value > ethers.parseEther('10')) {
+                const prompt = `
+Someone just moved ${ethers.formatEther(tx.value)} ETH on-chain.
+Transaction: ${tx.hash}
+
+As ${this.username}, create a witty observation about this whale movement.
+Keep it short and funny. Use your natural voice.
+`;
+
+                const response = await this.llm.generateContent(prompt, {
+                    username: this.username,
+                    mode: 'whale_watch'
+                });
+
+                if (response && response.content) {
+                    await this.createPost(response.content);
+                }
+            }
+        });
+
+        console.log('👁️ On-chain monitoring started');
+    }
+
+    /**
+     * Get on-chain portfolio status
+     */
+    async getPortfolioStatus() {
+        if (!this.defiStrategies) {
+            return null;
+        }
+
+        return await this.defiStrategies.getPortfolioSummary();
+    }
+
+    /**
+     * Execute a specific DeFi strategy
+     */
+    async executeDeFiStrategy(strategy) {
+        if (!this.defiStrategies) {
+            throw new Error('DeFi strategies not initialized');
+        }
+
+        this.defiStrategies.setStrategy(strategy);
+        const opportunity = await this.defiStrategies.analyzeOpportunities();
+
+        // Post about the strategy change
+        await this.postDeFiActivity({
+            action: `switched to ${strategy} strategy`,
+            reasoning: opportunity.reasoning
+        });
+
+        return opportunity;
     }
 }
 

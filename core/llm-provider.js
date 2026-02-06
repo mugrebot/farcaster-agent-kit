@@ -9,6 +9,7 @@ class LLMProvider {
         this.provider = config.provider || 'pattern'; // pattern, openai, anthropic, groq, local
         this.apiKey = config.apiKey;
         this.model = config.model;
+        this.subModel = config.subModel; // Cheaper model for coordination tasks
         this.baseURL = config.baseURL;
         this.maxTokens = config.maxTokens || 150;
         this.temperature = config.temperature || 0.8;
@@ -63,6 +64,34 @@ class LLMProvider {
         } catch (error) {
             console.error(`❌ LLM generation failed (${this.provider}):`, error.message);
             throw error;
+        }
+    }
+
+    /**
+     * Generate coordination/decision content using cheaper sub-model
+     * Used for binary decisions, scheduling, filtering, etc.
+     */
+    async generateCoordination(prompt, context = {}) {
+        if (this.provider === 'pattern' || !this.subModel) {
+            // Fallback to main model if no sub-model configured
+            return this.generateContent(prompt, context);
+        }
+
+        // Temporarily swap models for coordination task
+        const originalModel = this.model;
+        this.model = this.subModel;
+
+        try {
+            const result = await this.generateContent(prompt, {
+                ...context,
+                mode: 'coordination'
+            });
+
+            console.log(`💰 Used cheaper model (${this.subModel}) for coordination task`);
+            return result;
+        } finally {
+            // Always restore original model
+            this.model = originalModel;
         }
     }
 

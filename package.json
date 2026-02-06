@@ -14,7 +14,8 @@
     "web": "cd web && npm run dev",
     "build-web": "cd web && npm run build",
     "security-check": "node scripts/security-check.js",
-    "deploy-github": "npm run security-check && ./scripts/deploy-to-github.sh"
+    "deploy-github": "npm run security-check && ./scripts/deploy-to-github.sh",
+    "post": "node scripts/quick-post.js"
   },
   "keywords": [
     "farcaster",
