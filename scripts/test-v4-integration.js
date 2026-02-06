@@ -10,7 +10,7 @@ const ClanknetInteractorV4 = require('../core/clanknet-interactor-v4');
 
 class V4IntegrationTester {
     constructor() {
-        this.provider = new ethers.JsonRpcProvider('https://mainnet.base.org');
+        this.provider = new ethers.providers.JsonRpcProvider('https://mainnet.base.org');
 
         // Create test wallet (don't use real private key for testing)
         this.testWallet = ethers.Wallet.createRandom().connect(this.provider);
@@ -163,8 +163,8 @@ class V4IntegrationTester {
                 const quote = await this.interactor.getSwapQuote(ethAmount, 2);
 
                 if (quote.success) {
-                    const tokensOut = ethers.formatUnits(quote.estimatedAmountOut, 18);
-                    const minTokensOut = ethers.formatUnits(quote.minimumAmountOut, 18);
+                    const tokensOut = ethers.utils.formatUnits(quote.estimatedAmountOut, 18);
+                    const minTokensOut = ethers.utils.formatUnits(quote.minimumAmountOut, 18);
 
                     console.log(`   ✅ Quote successful:`);
                     console.log(`      Expected: ${parseFloat(tokensOut).toLocaleString()} CLANKNET`);
@@ -285,8 +285,8 @@ class V4IntegrationTester {
             console.log('📊 Swap Configuration:');
             console.log(`   Pool: ${swapConfig.poolKey.currency0} → ${swapConfig.poolKey.currency1}`);
             console.log(`   Direction: ${swapConfig.zeroForOne ? 'ETH → CLANKNET' : 'CLANKNET → ETH'}`);
-            console.log(`   Amount In: ${ethers.formatEther(swapConfig.amountIn)} ETH`);
-            console.log(`   Min Out: ${ethers.formatUnits(swapConfig.amountOutMinimum, 18)} CLANKNET`);
+            console.log(`   Amount In: ${ethers.utils.formatEther(swapConfig.amountIn)} ETH`);
+            console.log(`   Min Out: ${ethers.utils.formatUnits(swapConfig.amountOutMinimum, 18)} CLANKNET`);
 
             // Plan actions (simulation only)
             v4Planner.addAction(Actions.SWAP_EXACT_IN_SINGLE, [swapConfig]);

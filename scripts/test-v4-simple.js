@@ -9,7 +9,7 @@ const { ethers } = require('ethers');
 
 class SimpleV4Tester {
     constructor() {
-        this.provider = new ethers.JsonRpcProvider('https://mainnet.base.org');
+        this.provider = new ethers.providers.JsonRpcProvider('https://mainnet.base.org');
         this.clanknetAddress = '0x623693BefAECf61484e344fa272e9A8B82d9BB07';
         this.wethAddress = '0x4200000000000000000000000000000000000006';
     }
