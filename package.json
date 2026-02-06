@@ -15,7 +15,9 @@
     "build-web": "cd web && npm run build",
     "security-check": "node scripts/security-check.js",
     "deploy-github": "npm run security-check && ./scripts/deploy-to-github.sh",
-    "post": "node scripts/quick-post.js"
+    "post": "node scripts/quick-post.js",
+    "teach-clanknet": "node scripts/teach-clanknet.js",
+    "teach-v2": "node scripts/teach-clanknet-v2.js"
   },
   "keywords": [
     "farcaster",
