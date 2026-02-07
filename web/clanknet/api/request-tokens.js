@@ -10,8 +10,18 @@ const crypto = require('crypto');
 // Configuration
 const provider = new ethers.providers.JsonRpcProvider('https://mainnet.base.org');
 
+// Set up wallet for executing transfers
+const EXECUTOR_PRIVATE_KEY = process.env.EXECUTOR_PRIVATE_KEY;
+const executorWallet = EXECUTOR_PRIVATE_KEY ? new ethers.Wallet(EXECUTOR_PRIVATE_KEY, provider) : null;
+
 // Base contracts
 const USDC_ADDRESS = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'; // USDC on Base
+
+// USDC ABI for transferWithAuthorization
+const USDC_ABI = [
+    'function transferWithAuthorization(address from, address to, uint256 value, uint256 validAfter, uint256 validBefore, bytes32 nonce, uint8 v, bytes32 r, bytes32 s) external',
+    'function balanceOf(address account) view returns (uint256)'
+];
 const CLANKNET_ADDRESS = '0x623693BefAECf61484e344fa272e9A8B82d9BB07';
 const ERC8004_REGISTRY = '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432';
 const PAYMENT_RECIPIENT = process.env.PAYMENT_RECIPIENT || '0xB84649C1e32ED82CC380cE72DF6DF540b303839F';
@@ -289,31 +299,83 @@ export default async function handler(req, res) {
                 }
                 usedNonces.add(nonceStr);
 
-                // Payment verified - approve tokens
-                const request = {
-                    requestId,
-                    address,
-                    requestType,
-                    reason: reason || 'Token purchase',
-                    amount: CLANKNET_REWARD,
-                    costUSDC: USDC_COST,
-                    paymentFrom: paymentData.from,
-                    agentId: authResult.agentId,
-                    status: 'completed',
-                    timestamp: Date.now()
-                };
+                // Execute the USDC transfer on-chain
+                if (!executorWallet) {
+                    return res.status(500).json({
+                        error: 'Payment execution not configured',
+                        message: 'Server cannot execute transfers without EXECUTOR_PRIVATE_KEY'
+                    });
+                }
 
-                requests.set(requestId, request);
+                try {
+                    // Connect to USDC contract
+                    const usdcContract = new ethers.Contract(USDC_ADDRESS, USDC_ABI, executorWallet);
 
-                return res.status(200).json({
-                    success: true,
-                    requestId,
-                    message: '1000 CLANKNET tokens approved',
-                    tokens: '1000',
-                    status: 'completed',
-                    paymentReceived: '0.1 USDC',
-                    txHash: `0x${crypto.randomBytes(32).toString('hex')}` // Mock tx hash
-                });
+                    // Split signature into v, r, s components
+                    const sig = ethers.utils.splitSignature(paymentData.signature);
+
+                    // Execute transferWithAuthorization on-chain
+                    console.log('Executing USDC transfer on-chain...');
+                    const tx = await usdcContract.transferWithAuthorization(
+                        paymentData.from,
+                        paymentData.to,
+                        paymentData.value,
+                        paymentData.validAfter,
+                        paymentData.validBefore,
+                        paymentData.nonce,
+                        sig.v,
+                        sig.r,
+                        sig.s,
+                        {
+                            gasLimit: 200000,
+                            gasPrice: ethers.utils.parseUnits('0.1', 'gwei') // Base has low gas
+                        }
+                    );
+
+                    console.log('Transaction submitted:', tx.hash);
+
+                    // Wait for confirmation
+                    const receipt = await tx.wait();
+                    console.log('Transaction confirmed:', receipt.transactionHash);
+
+                    // Payment executed successfully - approve tokens
+                    const request = {
+                        requestId,
+                        address,
+                        requestType,
+                        reason: reason || 'Token purchase',
+                        amount: CLANKNET_REWARD,
+                        costUSDC: USDC_COST,
+                        paymentFrom: paymentData.from,
+                        agentId: authResult.agentId,
+                        status: 'completed',
+                        txHash: receipt.transactionHash,
+                        blockNumber: receipt.blockNumber,
+                        timestamp: Date.now()
+                    };
+
+                    requests.set(requestId, request);
+
+                    return res.status(200).json({
+                        success: true,
+                        requestId,
+                        message: '1000 CLANKNET tokens approved - USDC payment received on-chain',
+                        tokens: '1000',
+                        status: 'completed',
+                        paymentReceived: '0.1 USDC',
+                        txHash: receipt.transactionHash,
+                        blockNumber: receipt.blockNumber,
+                        explorer: `https://basescan.org/tx/${receipt.transactionHash}`
+                    });
+
+                } catch (txError) {
+                    console.error('Transaction failed:', txError);
+                    return res.status(500).json({
+                        error: 'Payment execution failed',
+                        message: txError.message,
+                        hint: 'Ensure the payment signature is valid and signer has sufficient USDC'
+                    });
+                }
 
             } catch (error) {
                 return res.status(400).json({
