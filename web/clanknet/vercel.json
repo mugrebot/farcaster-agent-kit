@@ -1,0 +1,70 @@
+{
+  "version": 2,
+  "functions": {
+    "api/**/*.js": {
+      "maxDuration": 10
+    }
+  },
+  "routes": [
+    {
+      "src": "/api/request-tokens",
+      "methods": ["GET", "POST", "OPTIONS"],
+      "dest": "/api/request-tokens.js"
+    },
+    {
+      "src": "/api/auth/test",
+      "methods": ["GET", "OPTIONS"],
+      "dest": "/api/auth/test.js"
+    },
+    {
+      "src": "/api/registration/challenges",
+      "methods": ["GET", "OPTIONS"],
+      "dest": "/api/registration/challenges.js"
+    },
+    {
+      "src": "/api/health",
+      "methods": ["GET", "OPTIONS"],
+      "dest": "/api/health.js"
+    },
+    {
+      "src": "/api/agent$",
+      "headers": {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*"
+      },
+      "dest": "/api/agent.json"
+    },
+    {
+      "src": "/api/agent/x402/1396$",
+      "headers": {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*"
+      },
+      "dest": "/api/agent/x402/1396.json"
+    },
+    {
+      "src": "/.well-known/ai-agent.json",
+      "headers": {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*"
+      },
+      "dest": "/.well-known/ai-agent.json"
+    },
+    {
+      "src": "/robots.txt",
+      "dest": "/robots.txt"
+    },
+    {
+      "src": "/sitemap.xml",
+      "dest": "/sitemap.xml"
+    },
+    {
+      "src": "/clanknet.png",
+      "dest": "/clanknet.png"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
+    }
+  ]
+}

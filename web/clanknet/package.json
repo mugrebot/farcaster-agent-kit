@@ -1,0 +1,8 @@
+{
+  "name": "clanknet-api",
+  "version": "1.0.0",
+  "description": "CLANKNET x402 Token Request API",
+  "dependencies": {
+    "ethers": "^5.8.0"
+  }
+}
