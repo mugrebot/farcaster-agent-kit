@@ -4,6 +4,7 @@
  */
 
 const { ethers } = require('ethers');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
@@ -14,15 +15,15 @@ class OnChainAgent {
         this.rpcUrl = config.rpcUrl || this.getDefaultRPC(this.network);
 
         // Initialize provider
-        this.provider = new ethers.JsonRpcProvider(this.rpcUrl);
+        this.provider = new ethers.providers.JsonRpcProvider(this.rpcUrl);
 
         // Wallet management
         this.wallet = null;
         this.walletPath = path.join(process.cwd(), '.wallet.json');
 
         // Safety limits
-        this.maxTransactionValue = ethers.parseEther(config.maxTransactionValue || '0.01');
-        this.dailySpendLimit = ethers.parseEther(config.dailySpendLimit || '0.1');
+        this.maxTransactionValue = ethers.utils.parseEther(config.maxTransactionValue || '0.01');
+        this.dailySpendLimit = ethers.utils.parseEther(config.dailySpendLimit || '0.1');
         this.dailySpent = 0n;
         this.lastResetDate = new Date().toDateString();
 
@@ -32,19 +33,31 @@ class OnChainAgent {
         // MEV and Slippage Protection
         this.mevProtection = config.mevProtection !== false; // Default enabled
         this.maxSlippage = config.maxSlippage || 200; // 2% default (in basis points)
-        this.minGasPrice = ethers.parseUnits('0.001', 'gwei'); // Min gas price
-        this.maxGasPrice = ethers.parseUnits('50', 'gwei'); // Max gas price
+        this.minGasPrice = ethers.utils.parseUnits('0.001', 'gwei'); // Min gas price
+        this.maxGasPrice = ethers.utils.parseUnits('50', 'gwei'); // Max gas price
 
         // Rate limiting
         this.transactionQueue = [];
         this.maxTransactionsPerHour = config.maxTxPerHour || 5;
         this.recentTransactions = [];
 
+        // Circuit breaker — trips after consecutive failures, auto-resets after cooldown
+        this.circuitBreaker = {
+            failures: 0,
+            maxFailures: config.circuitBreakerMax || 3,
+            cooldownMs: config.circuitBreakerCooldown || 30 * 60 * 1000, // 30 min
+            trippedAt: null
+        };
+
         // Multi-sig threshold
-        this.multiSigThreshold = ethers.parseEther(config.multiSigThreshold || '10'); // $10k default
+        this.multiSigThreshold = ethers.utils.parseEther(config.multiSigThreshold || '10'); // $10k default
 
         // Coordination with LLM
         this.llm = config.llm;
+
+        // Transaction approval manager (injected by AgentRunner after init)
+        this.approvalManager = null;
+        this._currentOperation = null;
 
         console.log(`🔗 OnChain Agent initialized on ${this.network}`);
     }
@@ -65,10 +78,23 @@ class OnChainAgent {
     }
 
     /**
-     * Initialize or load wallet
+     * Initialize or load wallet.
+     * When secretsClient is set, uses ProxySigner (private key stays in proxy process).
      */
     async initializeWallet(privateKey = null) {
         try {
+            // Proxy mode: signing routed through isolated secrets process
+            if (this.secretsClient && this.secretsClient.ready) {
+                this.wallet = this.secretsClient.createSigner(this.provider);
+                const address = await this.wallet.getAddress();
+                console.log(`💰 Wallet initialized via secrets proxy: ${address}`);
+
+                const balance = await this.provider.getBalance(address);
+                console.log(`   Balance: ${ethers.utils.formatEther(balance)} ETH`);
+                return address;
+            }
+
+            // Direct mode (no proxy): legacy behavior
             if (privateKey) {
                 // Create wallet from private key
                 this.wallet = new ethers.Wallet(privateKey, this.provider);
@@ -90,7 +116,7 @@ class OnChainAgent {
 
             // Get balance
             const balance = await this.provider.getBalance(this.wallet.address);
-            console.log(`   Balance: ${ethers.formatEther(balance)} ETH`);
+            console.log(`   Balance: ${ethers.utils.formatEther(balance)} ETH`);
 
             return this.wallet.address;
         } catch (error) {
@@ -112,26 +138,51 @@ class OnChainAgent {
     }
 
     /**
-     * Simple encryption (you should use proper encryption in production)
+     * AES-256-GCM encryption for wallet private keys
      */
     encrypt(text) {
-        // WARNING: This is a simple XOR encryption for demo
-        // Use proper encryption (e.g., crypto.createCipher) in production
-        const key = process.env.WALLET_ENCRYPTION_KEY || 'default-key';
-        let encrypted = '';
-        for (let i = 0; i < text.length; i++) {
-            encrypted += String.fromCharCode(
-                text.charCodeAt(i) ^ key.charCodeAt(i % key.length)
-            );
+        const keyHex = process.env.WALLET_ENCRYPTION_KEY;
+        if (!keyHex) {
+            throw new Error('WALLET_ENCRYPTION_KEY environment variable is required for wallet encryption');
         }
-        return Buffer.from(encrypted).toString('base64');
+        const key = crypto.createHash('sha256').update(keyHex).digest();
+        const iv = crypto.randomBytes(16);
+        const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+        let encrypted = cipher.update(text, 'utf8', 'hex');
+        encrypted += cipher.final('hex');
+        const authTag = cipher.getAuthTag().toString('hex');
+        return JSON.stringify({ iv: iv.toString('hex'), data: encrypted, tag: authTag });
     }
 
     /**
-     * Simple decryption
+     * AES-256-GCM decryption for wallet private keys
      */
-    decrypt(encrypted) {
-        const key = process.env.WALLET_ENCRYPTION_KEY || 'default-key';
+    decrypt(encryptedStr) {
+        const keyHex = process.env.WALLET_ENCRYPTION_KEY;
+        if (!keyHex) {
+            throw new Error('WALLET_ENCRYPTION_KEY environment variable is required for wallet decryption');
+        }
+        const key = crypto.createHash('sha256').update(keyHex).digest();
+        let parsed;
+        try {
+            parsed = JSON.parse(encryptedStr);
+        } catch {
+            // Legacy XOR format — migrate on next save
+            console.warn('⚠️ Legacy wallet encryption detected. Will re-encrypt on next save.');
+            return this._decryptLegacy(encryptedStr);
+        }
+        const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(parsed.iv, 'hex'));
+        decipher.setAuthTag(Buffer.from(parsed.tag, 'hex'));
+        let decrypted = decipher.update(parsed.data, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        return decrypted;
+    }
+
+    /**
+     * Legacy XOR decryption for migration only — will be removed
+     */
+    _decryptLegacy(encrypted) {
+        const key = process.env.WALLET_ENCRYPTION_KEY || '';
         const text = Buffer.from(encrypted, 'base64').toString();
         let decrypted = '';
         for (let i = 0; i < text.length; i++) {
@@ -159,14 +210,27 @@ class OnChainAgent {
     async validateTransaction(value, to, data = '0x') {
         this.checkDailyLimit();
 
+        // Circuit breaker check
+        if (this.circuitBreaker.trippedAt) {
+            const elapsed = Date.now() - this.circuitBreaker.trippedAt;
+            if (elapsed < this.circuitBreaker.cooldownMs) {
+                const remaining = Math.ceil((this.circuitBreaker.cooldownMs - elapsed) / 60000);
+                throw new Error(`Circuit breaker active: ${this.circuitBreaker.failures} consecutive failures. Resumes in ${remaining} min.`);
+            }
+            // Cooldown expired — reset
+            this.circuitBreaker.failures = 0;
+            this.circuitBreaker.trippedAt = null;
+            console.log('🔄 Circuit breaker reset after cooldown');
+        }
+
         // Check single transaction limit
         if (value > this.maxTransactionValue) {
-            throw new Error(`Transaction exceeds max value: ${ethers.formatEther(value)} > ${ethers.formatEther(this.maxTransactionValue)}`);
+            throw new Error(`Transaction exceeds max value: ${ethers.utils.formatEther(value)} > ${ethers.utils.formatEther(this.maxTransactionValue)}`);
         }
 
         // Check daily limit
         if (this.dailySpent + value > this.dailySpendLimit) {
-            throw new Error(`Transaction would exceed daily limit: ${ethers.formatEther(this.dailySpent + value)} > ${ethers.formatEther(this.dailySpendLimit)}`);
+            throw new Error(`Transaction would exceed daily limit: ${ethers.utils.formatEther(this.dailySpent + value)} > ${ethers.utils.formatEther(this.dailySpendLimit)}`);
         }
 
         // Use LLM to validate if transaction makes sense
@@ -174,9 +238,9 @@ class OnChainAgent {
             const decision = await this.llm.generateCoordination(`
 Should I execute this transaction?
 To: ${to}
-Value: ${ethers.formatEther(value)} ETH
+Value: ${ethers.utils.formatEther(value)} ETH
 Data: ${data}
-Current daily spent: ${ethers.formatEther(this.dailySpent)} ETH
+Current daily spent: ${ethers.utils.formatEther(this.dailySpent)} ETH
 
 Consider:
 - Is this a known contract/address?
@@ -198,9 +262,20 @@ Answer YES or NO with reasoning.
 
         // Check if multi-sig required
         if (value > this.multiSigThreshold) {
-            console.log(`🔐 Multi-sig required for transaction above ${ethers.formatEther(this.multiSigThreshold)} ETH`);
-            // In production, this would require multi-sig approval
+            console.log(`🔐 Multi-sig required for transaction above ${ethers.utils.formatEther(this.multiSigThreshold)} ETH`);
             throw new Error('Transaction requires multi-sig approval');
+        }
+
+        // Owner approval gate (Telegram-based)
+        if (this.approvalManager) {
+            const approved = await this.approvalManager.checkAndAwaitApproval({
+                to,
+                value: ethers.utils.formatEther(value),
+                valueWei: value.toString(),
+                data,
+                operation: this._currentOperation || 'unknown'
+            });
+            if (!approved) throw new Error('Transaction rejected by owner');
         }
 
         return true;
@@ -282,8 +357,10 @@ Answer YES or NO with reasoning.
     async sendETH(to, amount) {
         if (!this.wallet) throw new Error('Wallet not initialized');
 
-        const value = ethers.parseEther(amount.toString());
+        const value = ethers.utils.parseEther(amount.toString());
+        this._currentOperation = 'sendETH';
         await this.validateTransaction(value, to);
+        this._currentOperation = null;
 
         try {
             let tx = {
@@ -308,7 +385,7 @@ Answer YES or NO with reasoning.
                 hash: transaction.hash,
                 type: 'send_eth',
                 to,
-                value: ethers.formatEther(value),
+                value: ethers.utils.formatEther(value),
                 timestamp: Date.now(),
                 status: receipt.status === 1 ? 'success' : 'failed'
             };
@@ -316,8 +393,17 @@ Answer YES or NO with reasoning.
             this.transactionHistory.push(txRecord);
             this.recentTransactions.push(txRecord); // For rate limiting
 
+            // Circuit breaker: reset on success
+            this.circuitBreaker.failures = 0;
+
             return receipt;
         } catch (error) {
+            // Circuit breaker: record failure
+            this.circuitBreaker.failures++;
+            if (this.circuitBreaker.failures >= this.circuitBreaker.maxFailures) {
+                this.circuitBreaker.trippedAt = Date.now();
+                console.error(`🔴 Circuit breaker TRIPPED after ${this.circuitBreaker.failures} consecutive failures. Cooldown: ${this.circuitBreaker.cooldownMs / 60000} min`);
+            }
             console.error('Transaction failed:', error);
             throw error;
         }
@@ -355,9 +441,10 @@ Answer YES or NO with reasoning.
         const balance = await token.balanceOf(this.wallet.address);
         const symbol = await token.symbol();
         const decimals = await token.decimals();
+        if (decimals > 18) throw new Error(`Suspicious token ${tokenAddress}: decimals=${decimals} (max expected: 18)`);
 
         return {
-            balance: ethers.formatUnits(balance, decimals),
+            balance: ethers.utils.formatUnits(balance, decimals),
             symbol,
             raw: balance
         };
@@ -369,10 +456,13 @@ Answer YES or NO with reasoning.
     async transferToken(tokenAddress, to, amount) {
         const token = await this.interactWithToken(tokenAddress);
         const decimals = await token.decimals();
-        const value = ethers.parseUnits(amount.toString(), decimals);
+        if (decimals > 18) throw new Error(`Suspicious token ${tokenAddress}: decimals=${decimals} (max expected: 18)`);
+        const value = ethers.utils.parseUnits(amount.toString(), decimals);
 
         // Validate with 0 ETH value but check token amount
+        this._currentOperation = `transferToken(${tokenAddress.slice(0, 10)}...)`;
         await this.validateTransaction(0n, to);
+        this._currentOperation = null;
 
         const tx = await token.transfer(to, value);
         console.log(`📤 Token transfer sent: ${tx.hash}`);
@@ -384,7 +474,8 @@ Answer YES or NO with reasoning.
     /**
      * Interact with Uniswap V3 (Base)
      */
-    async swapTokens(tokenIn, tokenOut, amountIn, slippage = 0.5) {
+    async swapTokens(tokenIn, tokenOut, amountIn, slippageBps = 200) {
+        this._currentOperation = 'swapTokens';
         // Uniswap V3 Router on Base
         const UNISWAP_ROUTER = '0x2626664c2603336E57B271c5C0b26F421741e481';
 
@@ -394,14 +485,16 @@ Answer YES or NO with reasoning.
 
         const router = new ethers.Contract(UNISWAP_ROUTER, routerABI, this.wallet);
 
-        // Prepare swap parameters
+        // Calculate minimum output with slippage protection
+        const minAmountOut = this.calculateSlippageProtection(amountIn, slippageBps);
+
         const params = {
             tokenIn,
             tokenOut,
             fee: 3000, // 0.3% fee tier
             recipient: this.wallet.address,
             amountIn,
-            amountOutMinimum: 0, // Calculate based on slippage
+            amountOutMinimum: minAmountOut,
             sqrtPriceLimitX96: 0
         };
 
@@ -426,7 +519,7 @@ Answer YES or NO with reasoning.
         this.provider.on('pending', async (txHash) => {
             try {
                 const tx = await this.provider.getTransaction(txHash);
-                if (tx && tx.value > ethers.parseEther('1')) {
+                if (tx && tx.value > ethers.utils.parseEther('1')) {
                     // Large transaction detected
                     if (callback) {
                         await callback(tx);
@@ -444,9 +537,9 @@ Answer YES or NO with reasoning.
     async getGasPrice() {
         const feeData = await this.provider.getFeeData();
         return {
-            gasPrice: ethers.formatUnits(feeData.gasPrice, 'gwei'),
-            maxFeePerGas: ethers.formatUnits(feeData.maxFeePerGas, 'gwei'),
-            maxPriorityFeePerGas: ethers.formatUnits(feeData.maxPriorityFeePerGas, 'gwei')
+            gasPrice: ethers.utils.formatUnits(feeData.gasPrice, 'gwei'),
+            maxFeePerGas: ethers.utils.formatUnits(feeData.maxFeePerGas, 'gwei'),
+            maxPriorityFeePerGas: ethers.utils.formatUnits(feeData.maxPriorityFeePerGas, 'gwei')
         };
     }
 
@@ -454,6 +547,7 @@ Answer YES or NO with reasoning.
      * Execute arbitrary contract call
      */
     async callContract(address, abi, method, params = []) {
+        this._currentOperation = `callContract(${method})`;
         const contract = new ethers.Contract(address, abi, this.wallet);
 
         // Estimate gas

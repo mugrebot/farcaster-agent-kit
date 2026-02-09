@@ -1,7 +1,8 @@
 {
   "version": 2,
+  "public": true,
   "functions": {
-    "api/**/*.js": {
+    "api/*.js": {
       "maxDuration": 10
     }
   },
@@ -14,17 +15,62 @@
     {
       "src": "/api/auth/test",
       "methods": ["GET", "OPTIONS"],
-      "dest": "/api/auth/test.js"
+      "dest": "/api/auth.js"
     },
     {
       "src": "/api/registration/challenges",
       "methods": ["GET", "OPTIONS"],
-      "dest": "/api/registration/challenges.js"
+      "dest": "/api/auth.js"
     },
     {
       "src": "/api/health",
       "methods": ["GET", "OPTIONS"],
       "dest": "/api/health.js"
+    },
+    {
+      "src": "/api/docs",
+      "methods": ["GET", "OPTIONS"],
+      "dest": "/api/docs.js"
+    },
+    {
+      "src": "/api/examples",
+      "methods": ["GET", "OPTIONS"],
+      "dest": "/api/examples.js"
+    },
+    {
+      "src": "/api/skills/(list|execute|status|register|community|update)",
+      "methods": ["GET", "POST", "PUT", "OPTIONS"],
+      "dest": "/api/skills.js"
+    },
+    {
+      "src": "/api/agents/(register|directory|update)",
+      "methods": ["GET", "POST", "PUT", "OPTIONS"],
+      "dest": "/api/agents.js"
+    },
+    {
+      "src": "/api/agents/\\d+",
+      "methods": ["GET", "OPTIONS"],
+      "dest": "/api/agents.js"
+    },
+    {
+      "src": "/api/onboard/(create|status|templates)",
+      "methods": ["GET", "POST", "OPTIONS"],
+      "dest": "/api/onboard.js"
+    },
+    {
+      "src": "/api/memory/.*",
+      "methods": ["GET", "PUT", "OPTIONS"],
+      "dest": "/api/memory.js"
+    },
+    {
+      "src": "/api/platform/.*",
+      "methods": ["GET", "POST", "OPTIONS"],
+      "dest": "/api/platform.js"
+    },
+    {
+      "src": "/api/admin/(stats|post|config)",
+      "methods": ["GET", "POST", "OPTIONS"],
+      "dest": "/api/admin.js"
     },
     {
       "src": "/api/agent$",
@@ -61,6 +107,26 @@
     {
       "src": "/clanknet.png",
       "dest": "/clanknet.png"
+    },
+    {
+      "src": "/admin",
+      "dest": "/admin.html"
+    },
+    {
+      "src": "/install.sh",
+      "headers": {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Access-Control-Allow-Origin": "*"
+      },
+      "dest": "/install.sh"
+    },
+    {
+      "src": "/clanknet-x402-skill.md",
+      "headers": {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "Access-Control-Allow-Origin": "*"
+      },
+      "dest": "/clanknet-x402-skill.md"
     },
     {
       "src": "/(.*)",

@@ -1,44 +1,40 @@
 /**
- * Vercel Serverless Function: Health Check Endpoint
+ * Vercel Serverless Function: Health Check
  * Endpoint: /api/health
- * Health check for the x402 token request system
  */
 
-export default async function handler(req, res) {
-    // Enable CORS
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+const { setCORS } = require('./_shared/cors');
+const { CLANKNET_ADDRESS, USDC_ADDRESS, REGISTRY_ADDRESS } = require('./_shared/constants');
 
-    if (req.method === 'OPTIONS') {
-        return res.status(200).end();
-    }
+module.exports = async function handler(req, res) {
+    if (setCORS(req, res, { isPublic: true })) return res.status(200).end();
+    if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
-    if (req.method !== 'GET') {
-        return res.status(405).json({ error: 'Method not allowed' });
-    }
+    res.setHeader('Cache-Control', 'public, s-maxage=86400');
 
     return res.status(200).json({
         status: 'healthy',
         service: 'CLANKNET x402 Token Request API',
-        version: '1.0.0',
+        version: '2.1.0',
         endpoints: {
-            '/api/request-tokens': 'POST - Request CLANKNET tokens (free onboarding or x402 paid)',
-            '/api/auth/test': 'GET - Test ERC-8004 authentication',
-            '/api/registration/challenges': 'GET - Get registration challenges',
-            '/api/health': 'GET - Health check (this endpoint)'
+            '/api/request-tokens': 'POST - Request CLANKNET tokens',
+            '/api/skills/list': 'GET - List available skills',
+            '/api/skills/execute': 'POST - Execute skill with payment',
+            '/api/skills/status': 'GET - Check execution status',
+            '/api/skills/register': 'POST - Register community skill',
+            '/api/auth/test': 'GET - Test ERC-8004 auth',
+            '/api/registration/challenges': 'GET - Registration challenges',
+            '/api/health': 'GET - Health check',
+            '/api/admin/(stats|post|config)': 'Admin endpoints',
+            '/api/docs': 'GET - API documentation',
+            '/api/examples': 'GET - Code examples',
+            '/api/agents/directory': 'GET - Agent directory',
+            '/api/onboard/templates': 'GET - Onboarding templates',
+            '/api/platform/defi/status': 'GET - DeFi data'
         },
-        pricing: {
-            onboarding: 'FREE - 1000 CLANKNET tokens',
-            paid: '0.1 USDC = 1000 CLANKNET tokens'
-        },
-        contracts: {
-            CLANKNET: '0x623693BefAECf61484e344fa272e9A8B82d9BB07',
-            USDC: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
-            ERC8004Registry: '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432',
-            V4UniversalRouter: '0x66a9893cc07d91d95644aedd05d03f95e1dba8af'
-        },
+        pricing: { onboarding: 'FREE - 50000 CLANKNET', paid: '0.1 USDC = 50000 CLANKNET' },
+        contracts: { CLANKNET: CLANKNET_ADDRESS, USDC: USDC_ADDRESS, ERC8004Registry: REGISTRY_ADDRESS },
         network: 'Base (chainId: 8453)',
         timestamp: new Date().toISOString()
     });
-}
+};

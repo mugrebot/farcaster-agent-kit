@@ -1,8 +1,17 @@
 {
   "name": "clanknet-api",
-  "version": "1.0.0",
-  "description": "CLANKNET x402 Token Request API",
+  "version": "2.1.0",
+  "description": "CLANKNET x402 Token Request API + Agent Network",
+  "scripts": {
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage"
+  },
   "dependencies": {
-    "ethers": "^5.8.0"
+    "ethers": "^5.8.0",
+    "@upstash/redis": "^1.34.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
   }
 }

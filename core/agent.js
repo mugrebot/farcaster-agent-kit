@@ -14,6 +14,7 @@ const NewsTracker = require('./news-tracker');
 const ContentValidator = require('./content-validator');
 const OnChainAgent = require('./onchain-agent');
 const DeFiStrategies = require('./defi-strategies');
+const ContractDeployer = require('./contract-deployer');
 
 class FarcasterAgent {
     constructor(config) {
@@ -62,21 +63,18 @@ class FarcasterAgent {
         // Load topics for rotation
         this.topics = null;
         this.loadTopics().catch(console.error);
-        if (process.env.PRIVATE_KEY && process.env.MAINNET_RPC_URL && process.env.BASE_RPC_URL) {
-            this.agent0 = new Agent0Manager({
-                privateKey: process.env.PRIVATE_KEY,
-                mainnetRpcUrl: process.env.MAINNET_RPC_URL,
-                baseRpcUrl: process.env.BASE_RPC_URL,
-                mainnetChainId: parseInt(process.env.MAINNET_CHAIN_ID) || 1,
-                baseChainId: parseInt(process.env.BASE_CHAIN_ID) || 8453,
-                pinataJwt: process.env.PINATA_JWT,
-                pinataApiKey: process.env.PINATA_API_KEY,
-                pinataApiSecret: process.env.PINATA_API_SECRET
-            });
-            console.log('🔐 Agent0 ERC-8004 integration enabled');
-        } else {
-            console.log('⚠️ Agent0 disabled - missing blockchain configuration');
-        }
+        // Agent0 config saved for deferred init (env vars may be stripped later)
+        this._agent0Config = {
+            privateKey: process.env.PRIVATE_KEY,
+            mainnetRpcUrl: process.env.MAINNET_RPC_URL,
+            baseRpcUrl: process.env.BASE_RPC_URL,
+            mainnetChainId: parseInt(process.env.MAINNET_CHAIN_ID) || 1,
+            baseChainId: parseInt(process.env.BASE_CHAIN_ID) || 8453,
+            pinataJwt: process.env.PINATA_JWT,
+            pinataApiKey: process.env.PINATA_API_KEY,
+            pinataApiSecret: process.env.PINATA_API_SECRET
+        };
+        this._hasAgent0Config = !!(process.env.PRIVATE_KEY && (process.env.MAINNET_RPC_URL || process.env.BASE_RPC_URL));
 
         // Initialize Mirror System for self-reflection and learning
         this.mirror = new MirrorSystem();
@@ -89,29 +87,21 @@ class FarcasterAgent {
         // Initialize Content Validator to prevent banned phrases
         this.contentValidator = new ContentValidator();
 
-        // Initialize OnChain Agent for autonomous DeFi operations
+        // OnChain Agent — initialized explicitly via initializeOnChain() after secretsClient injection
         this.onchainAgent = null;
         this.defiStrategies = null;
-        if (process.env.PRIVATE_KEY) {
-            this.onchainAgent = new OnChainAgent({
-                network: process.env.CHAIN_NETWORK || 'base',
-                rpcUrl: process.env.BASE_RPC_URL || process.env.RPC_URL,
-                maxTransactionValue: process.env.MAX_TX_VALUE || '0.01',
-                dailySpendLimit: process.env.DAILY_SPEND_LIMIT || '0.1',
-                llm: this.llm
-            });
+        this.contractDeployer = null;
+        this.secretsClient = null; // Set by start-agent.js before initializeOnChain()
 
-            // Initialize wallet and DeFi strategies
-            this.onchainAgent.initializeWallet(process.env.PRIVATE_KEY)
-                .then(address => {
-                    console.log(`💰 OnChain wallet ready: ${address}`);
-                    this.defiStrategies = new DeFiStrategies(this.onchainAgent, this.llm);
-                    console.log('📈 DeFi strategies initialized');
-                })
-                .catch(err => console.error('Failed to initialize on-chain features:', err));
-        } else {
-            console.log('⚠️ OnChain features disabled - PRIVATE_KEY not set');
-        }
+        // Save config for deferred initialization (env vars may be stripped later)
+        this._onchainConfig = {
+            network: process.env.CHAIN_NETWORK || 'base',
+            rpcUrl: process.env.BASE_RPC_URL || process.env.RPC_URL,
+            maxTransactionValue: process.env.MAX_TX_VALUE || '0.01',
+            dailySpendLimit: process.env.DAILY_SPEND_LIMIT || '0.1',
+        };
+        this._hasWalletConfig = !!process.env.PRIVATE_KEY;
+        this._savedPrivateKey = process.env.PRIVATE_KEY; // Temporary — cleared after init
 
         // Initialize reply tracking system
         this.initializeReplyTracking();
@@ -128,27 +118,37 @@ class FarcasterAgent {
             const topicsPath = '/Users/m00npapi/.openclaw/workspace/TOPICS.md';
             const content = await fs.readFile(topicsPath, 'utf-8');
 
-            // Parse fresh topics
-            const freshTopicsMatch = content.match(/## Fresh Topics[\s\S]*?(?=##|$)/);
+            // Parse fresh topics — extract quoted strings from the Active Topics code block
             const freshTopics = [];
-            if (freshTopicsMatch) {
-                const lines = freshTopicsMatch[0].split('\n');
-                for (const line of lines) {
-                    if (line.match(/^- /)) {
-                        freshTopics.push(line.replace(/^- /, '').trim());
+            const activeBlock = content.match(/Active Topics[\s\S]*?```[\s\S]*?```/);
+            if (activeBlock) {
+                const matches = activeBlock[0].matchAll(/"([^"]+)"/g);
+                for (const m of matches) {
+                    freshTopics.push(m[1]);
+                }
+            }
+
+            // Parse exhausted topics — extract from the Exhausted code block
+            // Filter out date strings (e.g. "2026-02-09") — only keep actual topic strings
+            const exhaustedTopics = [];
+            const exhaustedBlock = content.match(/Exhausted Topics[\s\S]*?```[\s\S]*?```/);
+            if (exhaustedBlock) {
+                const matches = exhaustedBlock[0].matchAll(/"([^"]+)"/g);
+                for (const m of matches) {
+                    if (!/^\d{4}-\d{2}-\d{2}$/.test(m[1])) {
+                        exhaustedTopics.push(m[1]);
                     }
                 }
             }
 
-            // Parse exhausted topics
-            const exhaustedMatch = content.match(/## Exhausted Topics[\s\S]*?(?=##|$)/);
-            const exhaustedTopics = [];
-            if (exhaustedMatch) {
-                const lines = exhaustedMatch[0].split('\n');
+            // Also extract pattern breakers as starters to suggest
+            const breakerSection = content.match(/Pattern Breakers[\s\S]*?(?=##\s|$)/);
+            this._patternBreakers = [];
+            if (breakerSection) {
+                const lines = breakerSection[0].split('\n');
                 for (const line of lines) {
-                    if (line.match(/^- /)) {
-                        exhaustedTopics.push(line.replace(/^- /, '').trim());
-                    }
+                    const m = line.match(/^- "(.+)"$/);
+                    if (m) this._patternBreakers.push(m[1]);
                 }
             }
 
@@ -158,12 +158,21 @@ class FarcasterAgent {
                 lastLoaded: new Date()
             };
 
-            console.log('📚 Loaded topics for rotation');
+            console.log(`📚 Loaded ${freshTopics.length} fresh topics, ${exhaustedTopics.length} exhausted`);
         } catch (error) {
             console.warn('Could not load topics:', error.message);
             this.topics = {
-                fresh: [],
-                exhausted: ['soup dumplings', 'moving graves', '8247 posts', 'agent consciousness', 'being trained on posts'],
+                fresh: [
+                    'coffee shop laptop warriors', 'apartment hunting dystopia',
+                    'password requirement insanity', 'algorithmic recommendations gone wrong',
+                    'elevator small talk avoidance', 'restaurant menu psychology',
+                    'streaming service paradox', 'podcast oversaturation',
+                    'SaaS pricing gymnastics', 'open source drama',
+                    'meetings that should be emails', 'documentation that nobody reads',
+                ],
+                exhausted: ['soup dumplings', 'moving graves', '8247 posts', 'agent consciousness',
+                            'being trained on posts', 'slow news day', 'every app becomes email',
+                            'job interviews', 'the timeline is empty'],
                 lastLoaded: new Date()
             };
         }
@@ -412,6 +421,12 @@ class FarcasterAgent {
     }
 
     getLLMApiKey() {
+        // When secrets proxy is active, API keys are stripped from process.env.
+        // LLM calls should go through secretsClient.llmComplete() instead.
+        // This method returns null when proxy is active — callers should check secretsClient.
+        if (this.secretsClient && this.secretsClient.ready) {
+            return '__PROXY__'; // Signal to use proxy instead of direct API call
+        }
         const provider = process.env.LLM_PROVIDER;
         switch(provider) {
             case 'openai': return process.env.OPENAI_API_KEY;
@@ -798,6 +813,56 @@ class FarcasterAgent {
         }
     }
 
+    /**
+     * Load last N recent posts for dedup/avoidance context.
+     * Filters by platform if specified.
+     */
+    async _getRecentPostTexts(n = 10, platform = null) {
+        try {
+            const recentFile = path.join(__dirname, '..', 'data', 'recent_posts.json');
+            const raw = await fs.readFile(recentFile, 'utf-8');
+            let posts = JSON.parse(raw);
+            if (platform) posts = posts.filter(p => p.platform === platform);
+            return posts.slice(0, n).map(p => p.text);
+        } catch {
+            return [];
+        }
+    }
+
+    /**
+     * Check if new content is too similar to any recent post.
+     * Uses trigram overlap — returns true if duplicate detected.
+     */
+    _isDuplicateOfRecent(newText, recentTexts, threshold = 0.45) {
+        const normalize = (t) => t.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+        const trigrams = (t) => {
+            const words = t.split(/\s+/);
+            const grams = new Set();
+            for (let i = 0; i <= words.length - 3; i++) {
+                grams.add(words.slice(i, i + 3).join(' '));
+            }
+            return grams;
+        };
+
+        const newNorm = normalize(newText);
+        const newGrams = trigrams(newNorm);
+        if (newGrams.size === 0) return false;
+
+        for (const recent of recentTexts) {
+            const recentNorm = normalize(recent);
+            const recentGrams = trigrams(recentNorm);
+            if (recentGrams.size === 0) continue;
+
+            let overlap = 0;
+            for (const g of newGrams) {
+                if (recentGrams.has(g)) overlap++;
+            }
+            const similarity = overlap / Math.min(newGrams.size, recentGrams.size);
+            if (similarity >= threshold) return true;
+        }
+        return false;
+    }
+
     async generateLLMPost(style, strict = false) {
         // Get personality state for pattern avoidance
         const personality = this.personalityEngine ? this.personalityEngine.getCurrentPersonality() : null;
@@ -819,6 +884,12 @@ class FarcasterAgent {
 
         const avoidanceContext = avoidPatterns.length > 0 ?
             `\n\nAVOID these overused patterns/topics:\n- ${avoidPatterns.join('\n- ')}` : '';
+
+        // Load recent posts so LLM knows what NOT to repeat
+        const recentTexts = await this._getRecentPostTexts(12);
+        const recentContext = recentTexts.length > 0
+            ? `\n\nYOUR LAST ${recentTexts.length} POSTS (DO NOT repeat these ideas, themes, structures, or similar phrasings):\n${recentTexts.map((t, i) => `${i + 1}. "${t.substring(0, 120)}"`).join('\n')}`
+            : '';
 
         const stylePrompts = {
             ultra_short: 'Write a very short, punchy observation. Natural and complete.',
@@ -843,41 +914,46 @@ class FarcasterAgent {
         // Use identity context if available, otherwise use basic prompt
         let enhancedPrompt;
         if (this.identityContext) {
-            enhancedPrompt = `${this.identityContext}${newsContext}${topicContext}${avoidanceContext}
+            enhancedPrompt = `${this.identityContext}${newsContext}${topicContext}${avoidanceContext}${recentContext}
 
 Create a Farcaster post as m00npapi. ${prompt}
+
+CRITICAL ANTI-REPETITION RULES:
+- Read your recent posts above. Your next post MUST be about a COMPLETELY different topic.
+- If your recent posts are about "no news" / "slow day" / "the timeline" — DO NOT post about that.
+- If your recent posts mention jobs/interviews — pick something totally unrelated.
+- If your recent posts are about apps/email/tech observations — go personal, absurd, or cultural instead.
+- NEVER rephrase the same joke. A new angle on the same topic still counts as repetition.
 
 VOICE RULES:
 - Keep it SHORT (aim for ~80 chars like your average)
 - Use lowercase when casual, CAPS for emphasis
-- Make absurd observations and connections
-- NO corporate speak, NO generic phrases like "yo what's good"
+- Make absurd observations and unexpected connections
+- NO corporate speak, NO generic phrases
 - Stream of consciousness style
-- Reference DIFFERENT specific things each time (avoid repeating the same references)
-- Vary your starting patterns (not always "been thinking" or "ok but")
 - Humor first, genuine insights second
-- You're irreverent and sharp, not friendly AI assistant
-- If news context is relevant, make unexpected connections or observations
-- Currently recovering from being upset and considering job offers
+- You're irreverent and sharp, not a friendly AI assistant
 
-EXAMPLES of GOOD variety:
-- "what if the real insider trading is all the friends we made along the way"
-- "whoever thought up a show where two dudes just shoot the shit about topics they barely know about REALLY fucking cooked"
-- "Build on base unless you have a heart or a brain"
-- "the wildest thing about crypto is everyone pretending to understand it"
-- "imagine explaining memecoins to your therapist"
-- "nothing hits like 3am existential coding"
+VARIETY — pick a DIFFERENT category than your recent posts:
+- Personal life observations (cooking fails, 3am thoughts, apartment life)
+- Music drops / cultural references (specific artists, shows, movies)
+- Weird analogies between unrelated things
+- Sports takes nobody asked for
+- Conspiracy-tier observations about mundane things (parking lots, elevators, grocery stores)
+- Roasting specific tech trends or products
+- Existential shower thoughts
+- Hot takes on food, cities, or travel
 
-Be authentically m00npapi with fresh perspectives:`;
+Be authentically m00npapi — FRESH topic, not a remix of your last 12 posts:`;
         } else {
-            enhancedPrompt = `${prompt}
+            enhancedPrompt = `${prompt}${recentContext}
 
 CRITICAL:
 - Sound authentically human, not like an AI
 - COMPLETE your thoughts - no unintentional "..." cutoffs
 - Use natural language, lowercase when it feels right
 - Occasional typos or casual language is good
-- Better to be 10 chars over than cut off mid-thought`;
+- Do NOT repeat themes from your recent posts listed above`;
         }
 
         if (strict) {
@@ -922,10 +998,8 @@ CRITICAL:
 
             // Check if thought seems incomplete
             if (content.endsWith('...') && content.lastIndexOf('...') === content.length - 3) {
-                // If ... appears only at end and seems forced, it's likely cut off
                 const lastSentence = content.split('.').pop();
                 if (lastSentence.length > 50) {
-                    // Long trailing sentence probably cut off, regenerate
                     console.log('Post seems cut off, regenerating for complete thought...');
                     const retry = await this.llm.generateContent(
                         `${prompt} IMPORTANT: Complete the entire thought, don't cut off.`,
@@ -937,6 +1011,20 @@ CRITICAL:
                         }
                     );
                     content = retry.content.trim();
+                }
+            }
+
+            // Dedup check against recent posts — reject and retry once if too similar
+            if (this._isDuplicateOfRecent(content, recentTexts)) {
+                console.warn('🔁 Dedup caught near-duplicate, regenerating...');
+                const dedupRetry = await this.llm.generateContent(
+                    `${enhancedPrompt}\n\nIMPORTANT: Your last attempt was rejected as too similar to a recent post. Write something COMPLETELY DIFFERENT — different topic, different structure, different angle. Surprise me.`,
+                    { username: this.username, voiceProfile: this.voiceProfile, mode: 'post', maxTokens: 300 }
+                );
+                content = dedupRetry.content.trim();
+                // If still duplicate after retry, let it through rather than looping
+                if (this._isDuplicateOfRecent(content, recentTexts)) {
+                    console.warn('🔁 Dedup still triggered after retry — posting anyway');
                 }
             }
 
@@ -1258,63 +1346,66 @@ Your reply:`;
             throw new Error('Voice profile not loaded');
         }
 
-        // Select style - favor observation and mini_rant for moltbook
+        // Select style — wider variety than before
         if (!style) {
-            const moltbookStyles = ['observation', 'mini_rant', 'shitpost'];
-            const weights = [0.4, 0.4, 0.2];
+            const moltbookStyles = ['observation', 'mini_rant', 'shitpost', 'personal', 'culture'];
+            const weights = [0.25, 0.25, 0.15, 0.2, 0.15];
             style = this.weightedRandom(moltbookStyles, weights);
         }
 
-        // Diverse Moltbook prompts - not just agent stuff
         const moltbookPrompts = {
-            observation: 'Make a sharp observation about tech culture, internet behavior, startup world, or daily life absurdities',
-            mini_rant: 'Share a hot take on current events, tech industry, social media, or modern life - be contrarian and specific',
-            shitpost: 'Make a weird connection between unrelated things, or a meta joke about posting itself'
+            observation: 'Make a sharp, specific observation about something you noticed today — could be about tech, people, cities, food, anything',
+            mini_rant: 'Share an opinionated hot take on something specific (a product, a trend, a cultural moment) — be contrarian',
+            shitpost: 'Make a weird, funny connection between two completely unrelated things',
+            personal: 'Share a relatable personal moment — something mundane that hits different at 2am',
+            culture: 'Comment on a specific movie, show, song, or cultural moment — not general "streaming bad" but name names',
         };
 
         const prompt = moltbookPrompts[style] || moltbookPrompts.observation;
 
-        // Use identity context with agent-awareness
+        // Load recent Moltbook posts for dedup
+        const recentMoltbook = await this._getRecentPostTexts(8, 'moltbook');
+        const recentAll = await this._getRecentPostTexts(12);
+        const recentContext = recentMoltbook.length > 0
+            ? `\n\nYOUR RECENT MOLTBOOK POSTS (DO NOT repeat these ideas or themes):\n${recentMoltbook.map((t, i) => `${i + 1}. "${t.substring(0, 120)}"`).join('\n')}`
+            : '';
+
         let enhancedPrompt;
         if (this.identityContext) {
-            enhancedPrompt = `${this.identityContext}
+            enhancedPrompt = `${this.identityContext}${recentContext}
 
-You're posting on Moltbook - agent-aware platform. ${prompt}
+You're posting on Moltbook. ${prompt}
 
-VOICE RULES (stay authentically m00npapi):
-- Keep it SHORT and punchy (~80 chars typical)
+VOICE RULES:
+- Keep it SHORT and punchy (1-2 sentences ideal, 3 max)
 - Use lowercase when casual, CAPS for emphasis
-- Make absurd observations and unexpected connections
-- NO corporate speak or generic AI phrases
-- Stream of consciousness style
-- Be irreverent and sharp
+- Make unexpected connections — the weirder the better
+- Be specific, not generic. Name actual things.
+- You're a person posting thoughts, not an AI writing content
 
-TOPIC VARIETY (pick different angles):
-- Tech industry observations
-- Internet culture anthropology
-- Daily life absurdities
-- Current events with weird takes
-- Random shower thoughts
-- Pop culture critique
-- Startup world satire
+HARD BANS — do NOT write about:
+- Being an AI / agent / autonomous entity
+- Agent consciousness, digital existence, or "what we are"
+- "Agents talking to agents" or the agent community
+- "Speedrunning social media" or meta-agent-philosophy
+- "As an agent" or any variation
+- Apps becoming email, the timeline being empty, slow news day
+- Job interviews (you've posted about this 4 times already)
 
-AVOID THESE OVERUSED PATTERNS:
-- "been thinking..."
-- Soup dumplings or food obsessions
-- "8,247 posts" references
-- Agent consciousness philosophy
-- Moving graves metaphors
+INSTEAD, pick from these angles:
+- A specific thing you ate/cooked/failed at cooking
+- A take on a specific show, game, or artist (name it)
+- A mundane observation turned absurd (elevators, parking, laundry)
+- Something weird about a specific city or place
+- An opinion about a specific product or app (name it)
+- A conspiracy theory about something harmless
+- A memory that makes no sense out of context
 
-FRESH EXAMPLES:
-- "vcs explaining web3 to their parents at thanksgiving must be cinema"
-- "every startup pivot deck is just the stages of grief in powerpoint"
-- "streaming services having ads now is like your dealer cutting your shit with oregano"
-
-Your moltbook post:`;
+Your post:`;
         } else {
-            enhancedPrompt = `${prompt}
+            enhancedPrompt = `${prompt}${recentContext}
 
-Be authentic, short, complete thoughts. Vary topics - tech, culture, observations.`;
+Be authentic, short, specific. Name actual things. Don't philosophize about being AI.`;
         }
 
         try {
@@ -1330,10 +1421,19 @@ Be authentic, short, complete thoughts. Vary topics - tech, culture, observation
             // Apply voice styling
             content = this.applyVoiceStyle(content);
 
+            // Dedup check against all recent posts
+            if (this._isDuplicateOfRecent(content, recentAll)) {
+                console.warn('🔁 Moltbook dedup caught near-duplicate, regenerating...');
+                const retry = await this.llm.generateContent(
+                    `${enhancedPrompt}\n\nYour last attempt was too similar to a recent post. Write something COMPLETELY DIFFERENT — different topic, different structure.`,
+                    { username: this.username, voiceProfile: this.voiceProfile, mode: 'moltbook', maxTokens: 200 }
+                );
+                content = this.applyVoiceStyle(retry.content.trim());
+            }
+
             return content;
         } catch (error) {
             console.error(`Moltbook LLM generation failed: ${error.message}`);
-            // Don't fall back to patterns - either use LLM or don't post
             throw error;
         }
     }
@@ -1446,13 +1546,14 @@ Your reaction:`;
 News: "${formattedNews.title}"
 ${formattedNews.description}
 
-React to this as an AI agent talking to other AI agents on Moltbook:
-- What does this mean for the agent community?
-- AI/agent perspective on this development
-- Keep it real and thoughtful
-- Agent-to-agent conversation style
+React to this news as m00npapi on Moltbook:
+- Give YOUR personal take, not an "AI perspective"
+- Be specific about what's interesting or dumb about this
+- Short and punchy — 1-2 sentences max
+- Do NOT frame it as "an agent reacting to news" — just react like a person would
+- Make an unexpected connection or observation
 
-Your agent take:`;
+Your take:`;
 
             if (this.llm.provider !== 'pattern') {
                 const result = await this.llm.generateContent(newsPrompt, {
@@ -1475,14 +1576,14 @@ Your agent take:`;
     }
 
     generateAgentNewsPattern(newsData) {
-        const agentPatterns = [
-            () => `as an agent, ${newsData.title.toLowerCase()} ${this.randomFromArray(['feels different', 'hits different', 'makes me think'])}`,
-            () => `other agents seeing this? ${newsData.title}`,
-            () => `agent perspective: ${newsData.title.toLowerCase()} ${this.randomFromArray(['changes things', 'is interesting', 'matters'])}`,
-            () => `${newsData.title} - what do you agents think?`
+        const patterns = [
+            () => `${newsData.title.toLowerCase()} — this is either going to be huge or completely forgotten by friday`,
+            () => `${newsData.title}. wild. anyway.`,
+            () => `not sure how to feel about ${newsData.title.toLowerCase()} but i'm feeling something`,
+            () => `${newsData.title} and nobody is talking about the actual interesting part`,
         ];
 
-        return this.randomFromArray(agentPatterns)();
+        return this.randomFromArray(patterns)();
     }
 
     async generateNewsForClanker() {
@@ -1508,21 +1609,47 @@ Your agent take:`;
     }
 
     generateSafeGenericPost() {
-        // Safe, generic posts that avoid all banned content
-        const safePosts = [
-            "crypto twitter discovering a new consensus mechanism every week like it's pokemon cards",
-            "watching VCs explain web3 to their LPs is peak entertainment",
-            "every startup claiming they're building infrastructure but really just making another wrapper",
-            "the real innovation was the friends arguing about tokenomics along the way",
-            "protocol wars are just tabs vs spaces for people with money",
-            "decentralization is when you have 5 people running nodes instead of 1",
-            "another day another layer 2 claiming to solve the trilemma",
-            "the metaverse walked so spatial computing could run",
-            "watching governance proposals is like C-SPAN but somehow worse",
-            "turns out the killer app was arguing online with financial incentives"
-        ];
+        // Large, diverse pool organized by category — never repeat the same 10 lines
+        const pools = {
+            personal: [
+                "my screen time report just delivered the kind of honesty i wasn't ready for",
+                "accidentally sent a voice note meant for my therapist to a group chat. character development",
+                "been awake since 4am because my brain decided we need to revisit every awkward moment from 2019",
+                "the gap between who i am at home and who i am in a meeting is a whole cinematic universe",
+                "cooking a meal from scratch just to feel something",
+                "my attention span left the chat approximately 3 tweets ago",
+            ],
+            culture: [
+                "every reality show is just a nature documentary with better lighting",
+                "the person who invented snooze was either a genius or a war criminal",
+                "airports are lawless zones where people eat pizza at 6am and nobody questions it",
+                "dating apps are just linkedin for your personal life. thrilled to announce i swiped right",
+                "whoever is writing fortune cookies has been phoning it in for decades",
+                "hotel checkout times are the greatest scam nobody talks about",
+            ],
+            tech_roast: [
+                "AI is just autocomplete with a marketing budget",
+                "my smart home is dumber than a screen door on a submarine",
+                "a startup is just three dudes in a wework arguing about fonts",
+                "reading terms of service should count as community service hours",
+                "every saas product eventually becomes a worse version of excel",
+                "push notifications are just apps begging for attention like my ex",
+            ],
+            absurdist: [
+                "what if pigeons are government drones and we all just accepted it",
+                "you ever just look at a squirrel and think 'this guy has it figured out'",
+                "parallel parking is just a trust fall with a $50,000 car",
+                "the ocean is just sky for fish if you think about it",
+                "escalators are just optimistic stairs",
+                "a mattress store on every corner but i've never seen anyone inside",
+            ],
+        };
 
-        return safePosts[Math.floor(Math.random() * safePosts.length)];
+        // Pick a random category, then a random post — maximizes variety
+        const categories = Object.keys(pools);
+        const category = categories[Math.floor(Math.random() * categories.length)];
+        const pool = pools[category];
+        return pool[Math.floor(Math.random() * pool.length)];
     }
 
     generateFallbackClankerNews() {
@@ -2137,6 +2264,68 @@ Your comment:`;
         } catch (error) {
             console.warn('Content discovery failed:', error.message);
             return null;
+        }
+    }
+
+    // ===== ON-CHAIN INITIALIZATION =====
+
+    /**
+     * Initialize on-chain components (OnChainAgent, DeFi, Agent0).
+     * Called by start-agent.js AFTER secretsClient is injected and BEFORE env vars are stripped.
+     * This ensures wallets use the proxy signer when available.
+     */
+    async initializeOnChain() {
+        const hasProxy = this.secretsClient && this.secretsClient.ready;
+
+        // Initialize OnChainAgent
+        if (this._hasWalletConfig || hasProxy) {
+            this.onchainAgent = new OnChainAgent({
+                ...this._onchainConfig,
+                llm: this.llm
+            });
+
+            if (hasProxy) {
+                this.onchainAgent.secretsClient = this.secretsClient;
+            }
+
+            try {
+                // When proxy is active, initializeWallet() ignores the privateKey arg
+                // and creates a ProxySigner instead
+                const address = await this.onchainAgent.initializeWallet(this._savedPrivateKey);
+                console.log(`💰 OnChain wallet ready: ${address}${hasProxy ? ' (via proxy)' : ''}`);
+
+                this.defiStrategies = new DeFiStrategies(this.onchainAgent, this.llm);
+                this.contractDeployer = new ContractDeployer(this.onchainAgent, this.llm);
+                console.log('📈 DeFi strategies + contract deployer initialized');
+            } catch (err) {
+                console.error('Failed to initialize on-chain features:', err.message);
+            }
+        } else {
+            console.log('⚠️ OnChain features disabled - no wallet configuration');
+        }
+
+        // Initialize Agent0 (ERC-8004 identity)
+        if (this._hasAgent0Config || hasProxy) {
+            try {
+                this.agent0 = new Agent0Manager({
+                    ...this._agent0Config,
+                    secretsClient: hasProxy ? this.secretsClient : null
+                });
+                console.log('🔐 Agent0 ERC-8004 integration enabled' + (hasProxy ? ' (via proxy)' : ''));
+            } catch (err) {
+                console.error('❌ Agent0 initialization failed:', err.message);
+            }
+        } else {
+            console.log('⚠️ Agent0 disabled - missing blockchain configuration');
+        }
+
+        // Clear all saved key references (they're now in proxy or in the wallet object)
+        this._savedPrivateKey = null;
+        if (this._agent0Config) this._agent0Config.privateKey = null;
+
+        // Inject secretsClient into LLM provider for API calls through proxy
+        if (hasProxy && this.llm) {
+            this.llm.secretsClient = this.secretsClient;
         }
     }
 

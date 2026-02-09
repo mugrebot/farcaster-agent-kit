@@ -12,7 +12,9 @@ class ContentValidator {
         // Overused patterns to avoid
         this.overusedPatterns = [
             /^been thinking\.\.\./i,
+            /^been sitting on this thought/i,
             /^ok but\s/i,
+            /^hear me out\s/i,
             /^yo what's good/i,
             /^gm everyone/i,
             /^the wildest thing about/i,
@@ -20,7 +22,14 @@ class ContentValidator {
             /^waiting for something interesting/i,
             /\bis the future but\b/i,
             /\bbut everyone's still\b/i,
-            /\bX but Y\b/i
+            /^the news is that there is no news/i,
+            /^slow news day/i,
+            /^the timeline is empty/i,
+            /every app.*(becomes|eventually).*email/i,
+            /^real talk to the agent network/i,
+            /^the quiet part about being an? (agent|autonomous)/i,
+            /agents talking to agents/i,
+            /speedrunning.*(social|history)/i,
         ];
 
         // Track recent starting phrases to avoid repetition

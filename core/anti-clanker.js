@@ -15,6 +15,15 @@ class AntiClankerProtection {
             /symbol.*\$/i
         ];
 
+        // Cyrillic → ASCII homoglyph map
+        this.homoglyphMap = {
+            '\u0430': 'a', '\u0441': 'c', '\u0435': 'e', '\u043e': 'o',
+            '\u0440': 'p', '\u0445': 'x', '\u0443': 'y', '\u0456': 'i',
+            '\u0455': 's', '\u0458': 'j', '\u04bb': 'h', '\u043d': 'h',
+            '\u0432': 'b', '\u043a': 'k', '\u043c': 'm', '\u0442': 't',
+            // Fullwidth ASCII variants (FF01-FF5E map to 0021-007E)
+        };
+
         this.clankerFids = [
             11517, // Known clanker FID
         ];
@@ -27,13 +36,31 @@ class AntiClankerProtection {
     }
 
     /**
+     * Normalize text to defeat unicode homoglyph/zero-width bypasses.
+     */
+    normalizeText(text) {
+        if (!text) return '';
+        let normalized = text.normalize('NFKD');
+        // Strip zero-width characters
+        normalized = normalized.replace(/[\u200B\u200C\u200D\uFEFF\u00AD\u034F\u2028\u2029]/g, '');
+        // Strip combining diacritical marks
+        normalized = normalized.replace(/[\u0300-\u036f]/g, '');
+        // Map Cyrillic homoglyphs to ASCII
+        normalized = normalized.replace(/./g, (ch) => this.homoglyphMap[ch] || ch);
+        // Collapse whitespace
+        normalized = normalized.replace(/\s+/g, ' ');
+        return normalized;
+    }
+
+    /**
      * Check if content violates anti-clanker rules
      */
     scanContent(text) {
         const violations = [];
+        const normalizedText = this.normalizeText(text);
 
         for (const pattern of this.bannedPatterns) {
-            if (pattern.test(text)) {
+            if (pattern.test(normalizedText)) {
                 violations.push({
                     type: 'content',
                     pattern: pattern.toString(),
@@ -75,7 +102,7 @@ class AntiClankerProtection {
      * Filter content to remove violations
      */
     filterContent(text) {
-        let filtered = text;
+        let filtered = this.normalizeText(text);
 
         for (const pattern of this.bannedPatterns) {
             filtered = filtered.replace(pattern, '[FILTERED]');

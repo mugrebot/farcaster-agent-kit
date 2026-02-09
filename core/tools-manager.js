@@ -1,12 +1,18 @@
 /**
  * Tools Manager - Handles external integrations and tools for the agent
  * Allows agents to interact with various platforms and services
+ * Supports hot-reload and self-modifying skills (OpenClaw parity)
  */
+
+const fs = require('fs');
+const path = require('path');
 
 class ToolsManager {
     constructor() {
         this.tools = new Map();
         this.activeConnections = new Map();
+        this.skillsDir = path.join(process.cwd(), 'skills');
+        this._skillWatcher = null;
 
         // Built-in tool definitions
         this.builtInTools = {
@@ -55,8 +61,8 @@ class ToolsManager {
             telegram: {
                 name: 'Telegram',
                 type: 'social',
-                requiredKeys: ['botToken', 'chatId'],
-                capabilities: ['sendMessage', 'sendPhoto', 'poll']
+                requiredKeys: ['botToken'],
+                capabilities: ['sendMessage', 'sendPhoto', 'poll', 'getUpdates', 'answerCallbackQuery', 'editMessageText']
             },
             github: {
                 name: 'GitHub',
@@ -230,21 +236,165 @@ class ToolsManager {
     }
 
     /**
-     * Discord actions
+     * Discord actions via Discord.js REST API
      */
     async executeDiscordAction(config, capability, params) {
-        // Placeholder for Discord integration
-        console.log(`💬 Discord ${capability}:`, params.text?.substring(0, 50));
-        return { success: true, platform: 'discord', action: capability };
+        const https = require('https');
+        const baseUrl = 'https://discord.com/api/v10';
+        const headers = {
+            'Authorization': `Bot ${config.botToken}`,
+            'Content-Type': 'application/json'
+        };
+
+        const discordFetch = (method, path, body) => new Promise((resolve, reject) => {
+            const url = new URL(baseUrl + path);
+            const options = { method, hostname: url.hostname, path: url.pathname, headers };
+            const req = https.request(options, (res) => {
+                let data = '';
+                res.on('data', chunk => data += chunk);
+                res.on('end', () => {
+                    try { resolve(JSON.parse(data)); }
+                    catch { resolve({ raw: data }); }
+                });
+            });
+            req.on('error', reject);
+            if (body) req.write(JSON.stringify(body));
+            req.end();
+        });
+
+        try {
+            switch (capability) {
+                case 'sendMessage': {
+                    const channelId = params.channelId || config.defaultChannelId;
+                    if (!channelId) return { success: false, error: 'channelId required' };
+                    const result = await discordFetch('POST', `/channels/${channelId}/messages`, {
+                        content: params.text || params.content
+                    });
+                    console.log(`💬 Discord message sent to #${channelId}`);
+                    return { success: true, platform: 'discord', action: capability, messageId: result.id };
+                }
+                case 'readChannel': {
+                    const channelId = params.channelId || config.defaultChannelId;
+                    if (!channelId) return { success: false, error: 'channelId required' };
+                    const limit = params.limit || 10;
+                    const messages = await discordFetch('GET', `/channels/${channelId}/messages?limit=${limit}`);
+                    return { success: true, platform: 'discord', action: capability, messages };
+                }
+                case 'react': {
+                    const { channelId, messageId, emoji } = params;
+                    if (!channelId || !messageId || !emoji) return { success: false, error: 'channelId, messageId, and emoji required' };
+                    await discordFetch('PUT', `/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`);
+                    return { success: true, platform: 'discord', action: capability };
+                }
+                default:
+                    return { success: false, error: `Unknown Discord capability: ${capability}` };
+            }
+        } catch (error) {
+            console.error(`Discord ${capability} failed:`, error.message);
+            return { success: false, platform: 'discord', error: error.message };
+        }
     }
 
     /**
-     * Telegram actions
+     * Telegram actions via Bot API (raw HTTPS)
      */
     async executeTelegramAction(config, capability, params) {
-        // Placeholder for Telegram integration
-        console.log(`✈️ Telegram ${capability}:`, params.text?.substring(0, 50));
-        return { success: true, platform: 'telegram', action: capability };
+        const https = require('https');
+        const baseUrl = `https://api.telegram.org/bot${config.botToken}`;
+
+        const telegramCall = (method, body) => new Promise((resolve, reject) => {
+            const url = new URL(`${baseUrl}/${method}`);
+            const options = {
+                method: 'POST',
+                hostname: url.hostname,
+                path: url.pathname,
+                headers: { 'Content-Type': 'application/json' }
+            };
+            const req = https.request(options, (res) => {
+                let data = '';
+                res.on('data', chunk => data += chunk);
+                res.on('end', () => {
+                    try { resolve(JSON.parse(data)); }
+                    catch { resolve({ raw: data }); }
+                });
+            });
+            req.on('error', reject);
+            if (body) req.write(JSON.stringify(body));
+            req.end();
+        });
+
+        try {
+            switch (capability) {
+                case 'sendMessage': {
+                    const chatId = params.chatId || config.chatId;
+                    if (!chatId) return { success: false, error: 'chatId required' };
+                    const body = {
+                        chat_id: chatId,
+                        text: params.text || params.content
+                    };
+                    if (params.parseMode) body.parse_mode = params.parseMode;
+                    if (params.replyMarkup) body.reply_markup = JSON.stringify(params.replyMarkup);
+                    const result = await telegramCall('sendMessage', body);
+                    console.log(`✈️ Telegram message sent to ${chatId}`);
+                    return { success: true, platform: 'telegram', action: capability, messageId: result.result?.message_id };
+                }
+                case 'sendPhoto': {
+                    const chatId = params.chatId || config.chatId;
+                    if (!chatId || !params.photo) return { success: false, error: 'chatId and photo URL required' };
+                    const result = await telegramCall('sendPhoto', {
+                        chat_id: chatId,
+                        photo: params.photo,
+                        caption: params.caption || ''
+                    });
+                    return { success: true, platform: 'telegram', action: capability, messageId: result.result?.message_id };
+                }
+                case 'poll': {
+                    const chatId = params.chatId || config.chatId;
+                    if (!chatId || !params.question || !params.options) {
+                        return { success: false, error: 'chatId, question, and options required' };
+                    }
+                    const result = await telegramCall('sendPoll', {
+                        chat_id: chatId,
+                        question: params.question,
+                        options: params.options,
+                        is_anonymous: params.anonymous !== false
+                    });
+                    return { success: true, platform: 'telegram', action: capability, pollId: result.result?.poll?.id };
+                }
+                case 'getUpdates': {
+                    const result = await telegramCall('getUpdates', {
+                        offset: params.offset || 0,
+                        timeout: params.timeout || 30,
+                        allowed_updates: ['message', 'callback_query']
+                    });
+                    return { success: true, platform: 'telegram', action: capability, updates: result.result || [] };
+                }
+                case 'answerCallbackQuery': {
+                    if (!params.callbackQueryId) return { success: false, error: 'callbackQueryId required' };
+                    const result = await telegramCall('answerCallbackQuery', {
+                        callback_query_id: params.callbackQueryId,
+                        text: params.text || '',
+                        show_alert: params.showAlert || false
+                    });
+                    return { success: true, platform: 'telegram', action: capability };
+                }
+                case 'editMessageText': {
+                    const chatId = params.chatId || config.chatId;
+                    if (!chatId || !params.messageId || !params.text) {
+                        return { success: false, error: 'chatId, messageId, and text required' };
+                    }
+                    const body = { chat_id: chatId, message_id: params.messageId, text: params.text };
+                    if (params.replyMarkup) body.reply_markup = JSON.stringify(params.replyMarkup);
+                    const result = await telegramCall('editMessageText', body);
+                    return { success: true, platform: 'telegram', action: capability };
+                }
+                default:
+                    return { success: false, error: `Unknown Telegram capability: ${capability}` };
+            }
+        } catch (error) {
+            console.error(`Telegram ${capability} failed:`, error.message);
+            return { success: false, platform: 'telegram', error: error.message };
+        }
     }
 
     /**
@@ -697,6 +847,203 @@ class ToolsManager {
             research: 'Research & Information',
             development: 'Development Tools'
         };
+    }
+    // ===== HOT-RELOAD & SELF-MODIFYING SKILLS =====
+
+    /**
+     * Start watching the skills directory for changes (hot-reload)
+     */
+    startSkillWatcher() {
+        if (this._skillWatcher) return;
+        try {
+            if (!fs.existsSync(this.skillsDir)) {
+                fs.mkdirSync(this.skillsDir, { recursive: true });
+            }
+            this._skillWatcher = fs.watch(this.skillsDir, { recursive: true }, (eventType, filename) => {
+                if (!filename || !filename.endsWith('.js')) return;
+                console.log(`🔄 Skill change detected: ${filename} (${eventType})`);
+                this._reloadSkill(filename);
+            });
+            console.log(`👁️ Watching skills directory: ${this.skillsDir}`);
+        } catch (error) {
+            console.warn('Failed to start skill watcher:', error.message);
+        }
+    }
+
+    /**
+     * Stop the skills watcher
+     */
+    stopSkillWatcher() {
+        if (this._skillWatcher) {
+            this._skillWatcher.close();
+            this._skillWatcher = null;
+        }
+    }
+
+    /**
+     * Static code analysis — reject skills that try to access secrets or dangerous APIs
+     */
+    _auditSkillCode(code, skillName) {
+        const banned = [
+            { pattern: /process\.env/g, reason: 'Accessing process.env (secrets)' },
+            { pattern: /child_process/g, reason: 'Spawning child processes' },
+            { pattern: /require\s*\(\s*['"`]fs['"`]\s*\)/g, reason: 'File system access via require("fs")' },
+            { pattern: /require\s*\(\s*['"`]net['"`]\s*\)/g, reason: 'Network access via require("net")' },
+            { pattern: /require\s*\(\s*['"`]http['"`]\s*\)/g, reason: 'HTTP access via require("http")' },
+            { pattern: /require\s*\(\s*['"`]https['"`]\s*\)/g, reason: 'HTTPS access via require("https")' },
+            { pattern: /eval\s*\(/g, reason: 'Dynamic code execution via eval()' },
+            { pattern: /Function\s*\(/g, reason: 'Dynamic code execution via Function()' },
+            { pattern: /\.env/g, reason: 'Possible .env file reference' },
+            { pattern: /PRIVATE_KEY/gi, reason: 'References private key' },
+        ];
+        const violations = [];
+        for (const { pattern, reason } of banned) {
+            if (pattern.test(code)) violations.push(reason);
+        }
+        if (violations.length > 0) {
+            console.error(`🚫 Skill "${skillName}" BLOCKED — security violations: ${violations.join('; ')}`);
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Run skill code in a sandboxed vm context (no access to process, require, fs, etc.)
+     */
+    _runSkillSandboxed(code, skillName) {
+        const vm = require('vm');
+
+        // Build a safe API object the skill can use
+        const safeApi = {
+            log: (...args) => console.log(`[Skill:${skillName}]`, ...args),
+            registerTool: (name, config) => {
+                // Only allow registering tools through the safe path
+                console.log(`[Skill:${skillName}] Registered tool: ${name}`);
+                this.tools.set(name, { name, ...config, source: `skill:${skillName}` });
+            }
+        };
+
+        const sandbox = {
+            console: { log: safeApi.log, warn: safeApi.log, error: safeApi.log },
+            JSON, Math, Date, Array, Object, String, Number, Boolean, RegExp,
+            Map, Set, Promise, Symbol,
+            parseInt, parseFloat, isNaN, isFinite,
+            setTimeout: undefined, setInterval: undefined, // no timers
+            process: undefined, require: undefined, // no secrets, no requires
+            api: safeApi,
+            module: { exports: {} },
+            exports: {}
+        };
+
+        const context = vm.createContext(sandbox);
+        try {
+            vm.runInContext(code, context, {
+                filename: `skill-${skillName}.js`,
+                timeout: 5000, // 5s max execution time
+            });
+            // Check if skill exported a register function
+            const skillModule = sandbox.module.exports || sandbox.exports;
+            if (skillModule.register && typeof skillModule.register === 'function') {
+                // Run register with the safe api, NOT the real toolsManager
+                skillModule.register(safeApi);
+            }
+            console.log(`✅ Skill loaded (sandboxed): ${skillName}`);
+            return true;
+        } catch (error) {
+            console.error(`❌ Skill "${skillName}" sandbox error: ${error.message}`);
+            return false;
+        }
+    }
+
+    /**
+     * Reload a skill from disk (sandboxed)
+     */
+    _reloadSkill(filename) {
+        try {
+            const skillPath = path.join(this.skillsDir, filename);
+            const skillName = path.basename(filename, '.js');
+            const code = fs.readFileSync(skillPath, 'utf8');
+
+            // Security audit before loading
+            if (!this._auditSkillCode(code, skillName)) {
+                return; // Blocked by audit
+            }
+
+            this._runSkillSandboxed(code, skillName);
+        } catch (error) {
+            console.error(`Failed to reload skill ${filename}:`, error.message);
+        }
+    }
+
+    /**
+     * Create a new skill programmatically (self-modifying agent capability)
+     * Code is audited and sandboxed — cannot access secrets, fs, or network.
+     */
+    async createSkill(name, code, description = '') {
+        if (!name || !code) throw new Error('Skill name and code are required');
+        const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '');
+
+        // Security audit BEFORE writing to disk
+        if (!this._auditSkillCode(code, safeName)) {
+            throw new Error(`Skill "${safeName}" rejected: contains banned code patterns (secrets/fs/network access)`);
+        }
+
+        const skillPath = path.join(this.skillsDir, `${safeName}.js`);
+
+        let skillCode = code;
+        if (!code.includes('module.exports') && !code.includes('exports.register')) {
+            skillCode = `/**\n * Auto-generated skill: ${safeName}\n * ${description}\n */\n\n${code}\n\nmodule.exports = { register: (api) => { api.log('Skill ${safeName} loaded'); } };\n`;
+        }
+
+        if (!fs.existsSync(this.skillsDir)) {
+            fs.mkdirSync(this.skillsDir, { recursive: true });
+        }
+
+        fs.writeFileSync(skillPath, skillCode);
+        console.log(`📝 Skill created: ${skillPath}`);
+
+        // Hot-reload in sandbox
+        this._reloadSkill(`${safeName}.js`);
+
+        return { name: safeName, path: skillPath, description };
+    }
+
+    /**
+     * List all skills from the skills directory
+     */
+    listSkills() {
+        try {
+            if (!fs.existsSync(this.skillsDir)) return [];
+            return fs.readdirSync(this.skillsDir)
+                .filter(f => f.endsWith('.js'))
+                .map(f => ({
+                    name: f.replace('.js', ''),
+                    path: path.join(this.skillsDir, f),
+                    size: fs.statSync(path.join(this.skillsDir, f)).size
+                }));
+        } catch {
+            return [];
+        }
+    }
+
+    /**
+     * Get loaded skills with descriptions (for SkillHub indexing).
+     */
+    getLoadedSkills() {
+        return this.listSkills().map(s => ({
+            name: s.name,
+            description: s.name, // Descriptions loaded from skill metadata if available
+        }));
+    }
+
+    /**
+     * Find and load a skill by query via the SkillHub (if attached).
+     */
+    async findAndLoadSkill(query) {
+        if (this.skillHub) {
+            return this.skillHub.findAndLoadSkill(query);
+        }
+        return null;
     }
 }
 

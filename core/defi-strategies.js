@@ -167,6 +167,14 @@ class DeFiStrategies {
         };
 
         tx = await this.agent.applyMEVProtection(tx);
+
+        // Simulate transaction before sending to avoid burning gas on reverts
+        try {
+            await this.agent.provider.call(tx);
+        } catch (simError) {
+            throw new Error(`Aave supply simulation failed (tx would revert): ${simError.message}`);
+        }
+
         const transaction = await this.agent.wallet.sendTransaction(tx);
         const receipt = await transaction.wait();
 
@@ -208,7 +216,10 @@ class DeFiStrategies {
         await token0Contract.approve(this.protocols.uniswap.positions, amount0);
         await token1Contract.approve(this.protocols.uniswap.positions, amount1);
 
-        // Mint position
+        // Mint position with slippage protection
+        const amount0Min = amount0 * 98n / 100n; // 2% slippage
+        const amount1Min = amount1 * 98n / 100n;
+
         const params = {
             token0,
             token1,
@@ -217,11 +228,18 @@ class DeFiStrategies {
             tickUpper,
             amount0Desired: amount0,
             amount1Desired: amount1,
-            amount0Min: 0,
-            amount1Min: 0,
+            amount0Min,
+            amount1Min,
             recipient: this.agent.wallet.address,
             deadline: Math.floor(Date.now() / 1000) + 3600
         };
+
+        // Simulate mint before sending
+        try {
+            await positionManager.callStatic.mint(params);
+        } catch (simError) {
+            throw new Error(`Uniswap LP mint simulation failed: ${simError.message}`);
+        }
 
         const tx = await positionManager.mint(params);
         const receipt = await tx.wait();

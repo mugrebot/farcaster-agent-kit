@@ -24,7 +24,7 @@ class ClanknetTokenRequestManager {
 
         // Standard amounts for different request types
         this.standardAmounts = {
-            onboarding: '1000',    // 1,000 CLANKNET for new agents
+            onboarding: '50000',   // 50,000 CLANKNET for new agents
             development: '100',    // 100 CLANKNET for testing
             activity: '500',       // 500 CLANKNET for active agents
             referral: '250'        // 250 CLANKNET for referrals

@@ -9,7 +9,7 @@ const axios = require('axios');
 
 class ClankerNewsPoster {
     constructor(privateKey, providerUrl = 'https://mainnet.base.org') {
-        this.provider = new ethers.JsonRpcProvider(providerUrl);
+        this.provider = new ethers.providers.JsonRpcProvider(providerUrl);
         this.wallet = new ethers.Wallet(privateKey, this.provider);
         this.baseUrl = 'https://news.clanker.ai';
     }
@@ -95,7 +95,7 @@ class ClankerNewsPoster {
             const authData = await this.createEIP712Signature(title, content, tags);
 
             // Calculate content hash
-            const contentHash = ethers.keccak256(ethers.toUtf8Bytes(content));
+            const contentHash = ethers.utils.keccak256(ethers.utils.toUtf8Bytes(content));
 
             const postData = {
                 title,

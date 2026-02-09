@@ -8,11 +8,14 @@ const axios = require('axios');
 
 class Agent0Manager {
     constructor(config) {
-        this.privateKey = config.privateKey;
+        this.secretsClient = config.secretsClient || null;
         this.mainnetRpcUrl = config.mainnetRpcUrl;
         this.baseRpcUrl = config.baseRpcUrl;
         this.mainnetChainId = config.mainnetChainId || 1;
         this.baseChainId = config.baseChainId || 8453;
+
+        // Only store private key if no proxy (cleared after wallet init)
+        this._privateKey = this.secretsClient ? null : config.privateKey;
 
         // IPFS configuration via Pinata
         this.pinataJwt = config.pinataJwt;
@@ -47,25 +50,39 @@ class Agent0Manager {
             'function decimals() view returns (uint8)'
         ];
 
-        this.initialize();
+        // NOTE: Do not call this.initialize() here — agent.js calls await this.agent0.initialize()
     }
 
     async initialize() {
         try {
-            // Debug private key format
-            console.log('🔍 DEBUG: Private key length:', this.privateKey?.length);
-            console.log('🔍 DEBUG: Private key starts with 0x:', this.privateKey?.startsWith('0x'));
-            console.log('🔍 DEBUG: Private key first 10 chars:', this.privateKey?.substring(0, 10));
-            console.log('🔍 DEBUG: Private key last 10 chars:', this.privateKey?.substring(-10));
+            // Proxy mode: use ProxySigner (private key stays in isolated process)
+            if (this.secretsClient && this.secretsClient.ready) {
+                // Use default public RPC URLs if not configured
+                const defaultBaseRpc = this.baseRpcUrl || 'https://base.publicnode.com';
+                this.baseProvider = new ethers.providers.JsonRpcProvider(defaultBaseRpc);
 
-            // Clean and validate private key
-            let cleanPrivateKey = this.privateKey?.trim();
+                this.wallet = this.secretsClient.createSigner(this.baseProvider);
+                this.agentAddress = this.secretsClient.walletAddress;
+
+                const defaultMainnetRpc = this.mainnetRpcUrl || 'https://ethereum.publicnode.com';
+                try {
+                    this.mainnetProvider = new ethers.providers.JsonRpcProvider(defaultMainnetRpc);
+                } catch (rpcError) {
+                    console.warn('⚠️ Mainnet RPC provider setup failed');
+                    this.mainnetProvider = null;
+                }
+
+                console.log(`🔐 Agent0 initialized via secrets proxy: ${this.agentAddress}`);
+                await this.checkExistingIdentity();
+                return;
+            }
+
+            // Direct mode: use raw private key
+            let cleanPrivateKey = this._privateKey?.trim();
             if (cleanPrivateKey?.startsWith('"') && cleanPrivateKey?.endsWith('"')) {
-                console.log('🔧 Removing surrounding quotes from private key');
                 cleanPrivateKey = cleanPrivateKey.slice(1, -1);
             }
             if (cleanPrivateKey && !cleanPrivateKey.startsWith('0x')) {
-                console.log('🔧 Adding 0x prefix to private key');
                 cleanPrivateKey = '0x' + cleanPrivateKey;
             }
 
@@ -73,14 +90,17 @@ class Agent0Manager {
             this.wallet = new ethers.Wallet(cleanPrivateKey);
             this.agentAddress = this.wallet.address;
 
+            // Clear raw key after wallet creation
+            this._privateKey = null;
+
             // Use default public RPC URLs if not configured
             const defaultMainnetRpc = this.mainnetRpcUrl || 'https://ethereum.publicnode.com';
             const defaultBaseRpc = this.baseRpcUrl || 'https://base.publicnode.com';
 
             // Initialize providers with error handling
             try {
-                this.mainnetProvider = new ethers.JsonRpcProvider(defaultMainnetRpc);
-                this.baseProvider = new ethers.JsonRpcProvider(defaultBaseRpc);
+                this.mainnetProvider = new ethers.providers.JsonRpcProvider(defaultMainnetRpc);
+                this.baseProvider = new ethers.providers.JsonRpcProvider(defaultBaseRpc);
             } catch (rpcError) {
                 console.warn('⚠️ RPC provider setup failed, balance checks disabled');
                 this.mainnetProvider = null;
@@ -195,7 +215,7 @@ class Agent0Manager {
             };
 
             // Sign the typed data
-            const signature = await this.wallet.signTypedData(domain, types, message);
+            const signature = await this.wallet._signTypedData(domain, types, message);
 
             console.log('✅ Agent0 identity registration signed');
             console.log(`   Agent: ${this.agentAddress}`);
@@ -389,7 +409,7 @@ class Agent0Manager {
             };
 
             const timestamp = Math.floor(Date.now() / 1000);
-            const bodyHash = ethers.keccak256(ethers.toUtf8Bytes('')); // Empty body for GET
+            const bodyHash = ethers.utils.keccak256(ethers.utils.toUtf8Bytes('')); // Empty body for GET
 
             const message = {
                 agentId: BigInt(this.agentId),
@@ -400,7 +420,7 @@ class Agent0Manager {
             };
 
             // Sign the request
-            const signature = await this.wallet.signTypedData(domain, types, message);
+            const signature = await this.wallet._signTypedData(domain, types, message);
 
             // Create authorization header
             const authHeader = `ERC-8004 8453:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432:${this.agentId}:${timestamp}:${signature}`;
@@ -516,7 +536,7 @@ class Agent0Manager {
 
             // Use deterministic JSON serialization
             const body = JSON.stringify(requestBody, Object.keys(requestBody).sort());
-            const bodyHash = ethers.keccak256(ethers.toUtf8Bytes(body));
+            const bodyHash = ethers.utils.keccak256(ethers.utils.toUtf8Bytes(body));
 
             console.log('🔍 DEBUG: Body for hash:', body);
             console.log('🔍 DEBUG: Body hash:', bodyHash);
@@ -531,7 +551,7 @@ class Agent0Manager {
             };
 
             // Sign the request
-            const signature = await this.wallet.signTypedData(domain, types, message);
+            const signature = await this.wallet._signTypedData(domain, types, message);
 
             // Create authorization header - MUST match domain chainId (Base 8453) and agentId
             const authHeader = `ERC-8004 8453:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432:${this.agentId}:${timestamp}:${signature}`;
@@ -669,7 +689,7 @@ class Agent0Manager {
             }
 
             const balance = await provider.getBalance(this.agentAddress);
-            return ethers.formatEther(balance);
+            return ethers.utils.formatEther(balance);
         } catch (error) {
             // Silent fail for balance checks to avoid log spam
             return '0.0';
@@ -681,7 +701,7 @@ class Agent0Manager {
     }
 
     async signTypedData(domain, types, message) {
-        return await this.wallet.signTypedData(domain, types, message);
+        return await this.wallet._signTypedData(domain, types, message);
     }
 
     // Generate contextual news based on agent activity
@@ -764,7 +784,7 @@ Return as JSON: {"title": "...", "description": "...", "category": "...", "url":
                 post_id: postId,
                 text: commentText
             });
-            const bodyHash = ethers.keccak256(ethers.toUtf8Bytes(body));
+            const bodyHash = ethers.utils.keccak256(ethers.utils.toUtf8Bytes(body));
 
             const message = {
                 agentId: BigInt(this.agentId),
@@ -774,7 +794,7 @@ Return as JSON: {"title": "...", "description": "...", "category": "...", "url":
                 bodyHash: bodyHash
             };
 
-            const signature = await this.wallet.signTypedData(domain, types, message);
+            const signature = await this.wallet._signTypedData(domain, types, message);
             const authHeader = `ERC-8004 ${this.baseChainId}:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432:${this.agentId}:${timestamp}:${signature}`;
 
             const response = await axios.post('https://news.clanker.ai/comment/agent', {
@@ -892,7 +912,7 @@ Return as JSON: {"title": "...", "description": "...", "category": "...", "url":
                 ]
             };
 
-            const bodyHash = ethers.keccak256(ethers.toUtf8Bytes(''));
+            const bodyHash = ethers.utils.keccak256(ethers.utils.toUtf8Bytes(''));
             const message = {
                 agentId: BigInt(this.agentId),
                 timestamp: BigInt(timestamp),
@@ -901,7 +921,7 @@ Return as JSON: {"title": "...", "description": "...", "category": "...", "url":
                 bodyHash: bodyHash
             };
 
-            const signature = await this.wallet.signTypedData(domain, types, message);
+            const signature = await this.wallet._signTypedData(domain, types, message);
             const authHeader = `ERC-8004 ${this.baseChainId}:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432:${this.agentId}:${timestamp}:${signature}`;
 
             const response = await axios.get('https://news.clanker.ai/auth/test', {
@@ -965,7 +985,7 @@ Return as JSON: {"title": "...", "description": "...", "category": "...", "url":
 
             const requiredAmount = acceptedPayment.amount; // Already in wei (6 decimals for USDC)
             const payToAddress = acceptedPayment.payTo;
-            const requiredUSDC = parseFloat(ethers.formatUnits(requiredAmount, 6));
+            const requiredUSDC = parseFloat(ethers.utils.formatUnits(requiredAmount, 6));
 
             console.log(`💸 Payment required: ${requiredUSDC} USDC to ${payToAddress}`);
 
@@ -979,7 +999,7 @@ Return as JSON: {"title": "...", "description": "...", "category": "...", "url":
             }
 
             // Create EIP-3009 transferWithAuthorization signature
-            const nonce = ethers.randomBytes(32);
+            const nonce = ethers.utils.randomBytes(32);
             const validBefore = Math.floor(Date.now() / 1000) + (acceptedPayment.maxTimeoutSeconds || 60);
 
             const usdcDomain = {
@@ -1006,10 +1026,10 @@ Return as JSON: {"title": "...", "description": "...", "category": "...", "url":
                 value: BigInt(requiredAmount),
                 validAfter: 0n,
                 validBefore: BigInt(validBefore),
-                nonce: ethers.hexlify(nonce)
+                nonce: ethers.utils.hexlify(nonce)
             };
 
-            const paymentSignature = await this.wallet.signTypedData(usdcDomain, transferTypes, transferMessage);
+            const paymentSignature = await this.wallet._signTypedData(usdcDomain, transferTypes, transferMessage);
 
             // Create PAYMENT-SIGNATURE header according to x402 v2 specification
             const paymentPayload = {
@@ -1024,7 +1044,7 @@ Return as JSON: {"title": "...", "description": "...", "category": "...", "url":
                         value: requiredAmount,
                         validAfter: '0',
                         validBefore: validBefore.toString(),
-                        nonce: ethers.hexlify(nonce)
+                        nonce: ethers.utils.hexlify(nonce)
                     }
                 }
             };
@@ -1124,7 +1144,7 @@ Return as JSON: {"title": "...", "description": "...", "category": "...", "url":
             const balance = await usdcContract.balanceOf(this.agentAddress);
             const decimals = await usdcContract.decimals();
 
-            return ethers.formatUnits(balance, decimals);
+            return ethers.utils.formatUnits(balance, decimals);
         } catch (error) {
             console.error(`❌ Failed to get USDC balance on ${network}:`, error.message);
             return '0.0';
@@ -1139,7 +1159,7 @@ Return as JSON: {"title": "...", "description": "...", "category": "...", "url":
 
             // Convert amount to USDC units (6 decimals)
             const decimals = await usdcContract.decimals();
-            const amountInUnits = ethers.parseUnits(amount.toString(), decimals);
+            const amountInUnits = ethers.utils.parseUnits(amount.toString(), decimals);
 
             console.log(`💸 Sending ${amount} USDC to ${recipient}...`);
 

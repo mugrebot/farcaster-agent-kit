@@ -3,8 +3,8 @@
 /**
  * Clanknet Token Request API Server with x402 Payment Protocol
  * Handles token requests with ERC-8004 authentication and x402 payments
- * Free onboarding: 1000 CLANKNET for new agents
- * Paid requests: 0.1 USDC = 1000 CLANKNET via x402 protocol
+ * Free onboarding: 50000 CLANKNET for new agents
+ * Paid requests: 0.1 USDC = 50000 CLANKNET via x402 protocol
  */
 
 const express = require('express');
@@ -23,7 +23,7 @@ const ERC8004_REGISTRY = '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432'; // Offici
 
 // Pricing
 const USDC_COST = '100000'; // 0.1 USDC (6 decimals)
-const CLANKNET_REWARD = '1000000000000000000000'; // 1000 CLANKNET (18 decimals)
+const CLANKNET_REWARD = '50000000000000000000000'; // 50000 CLANKNET (18 decimals)
 
 // Registration verification challenges
 const REGISTRATION_CHALLENGES = {
@@ -229,7 +229,7 @@ app.post('/api/request-tokens', async (req, res) => {
             status: 'approved',
             agentId,
             clanknetReward: CLANKNET_REWARD,
-            message: 'Payment verified - 1000 CLANKNET tokens approved',
+            message: 'Payment verified - 50000 CLANKNET tokens approved',
             estimatedDelivery: '1-2 minutes'
         });
 
@@ -320,7 +320,7 @@ function send402PaymentRequired(res, resourceUrl) {
         .json({
             success: false,
             error: 'Payment required',
-            message: '0.1 USDC payment required for 1000 CLANKNET tokens'
+            message: '0.1 USDC payment required for 50000 CLANKNET tokens'
         });
 }
 
@@ -551,7 +551,7 @@ app.get('/api/health', (req, res) => {
         pricing: {
             usdcCost: USDC_COST,
             clanknetReward: CLANKNET_REWARD,
-            formatted: '0.1 USDC = 1000 CLANKNET'
+            formatted: '0.1 USDC = 50000 CLANKNET'
         },
         contracts: {
             usdc: USDC_ADDRESS,
@@ -591,7 +591,7 @@ function getRegistrationQuestion(challengeId) {
         'v4-pool-address': 'What is the CLANKNET/WETH V4 pool address on Base?',
         'universal-router': 'What is the official Uniswap V4 Universal Router address on Base?',
         'clanknet-symbol': 'What is the symbol of the Clanknet token?',
-        'payment-amount': 'How much USDC (in wei) is required for 1000 CLANKNET tokens?',
+        'payment-amount': 'How much USDC (in wei) is required for 50000 CLANKNET tokens?',
         'registry-name': 'What is the EIP-712 domain name for the ERC-8004 registry?'
     };
     return questions[challengeId] || 'Unknown challenge';
@@ -614,7 +614,7 @@ function getRegistrationHint(challengeId) {
 // Start server
 app.listen(PORT, () => {
     console.log(`🚀 Clanknet Token Request API v2.0 with x402 running on port ${PORT}`);
-    console.log(`💰 Pricing: 0.1 USDC = 1000 CLANKNET (via x402 payment protocol)`);
+    console.log(`💰 Pricing: 0.1 USDC = 50000 CLANKNET (via x402 payment protocol)`);
     console.log(`🔐 Authentication: ERC-8004 agent registry required`);
     console.log(`✅ Free onboarding: Still available for development/testing`);
     console.log(`🏠 Contracts:`);
@@ -649,7 +649,7 @@ module.exports = app;
  *    PAYMENT-SIGNATURE: <base64-encoded-payment-data>
  *    { "requestType": "paid", "reason": "Agent token acquisition" }
  *
- * 4. Server verifies payment and approves 1000 CLANKNET tokens
+ * 4. Server verifies payment and approves 50000 CLANKNET tokens
  *
  * Registration verification (optional):
  * Include registrationChallenge and challengeAnswer to verify agent read docs

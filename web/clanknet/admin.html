@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CLANKNET Agent Admin</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+            background: #0a0a0a;
+            color: #ffffff;
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        .admin-header {
+            background: rgba(15, 15, 15, 0.95);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid rgba(139, 92, 246, 0.3);
+            padding: 1rem 2rem;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .admin-title {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #8b5cf6;
+        }
+
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .sign-out-btn {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+            border: 1px solid #ef4444;
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .sign-out-btn:hover {
+            background: rgba(239, 68, 68, 0.3);
+        }
+
+        .admin-container {
+            display: grid;
+            grid-template-columns: 250px 1fr;
+            min-height: calc(100vh - 60px);
+        }
+
+        .sidebar {
+            background: rgba(15, 15, 15, 0.8);
+            border-right: 1px solid rgba(139, 92, 246, 0.2);
+            padding: 2rem 1rem;
+        }
+
+        .sidebar-item {
+            padding: 0.75rem 1rem;
+            margin: 0.25rem 0;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .sidebar-item:hover {
+            background: rgba(139, 92, 246, 0.1);
+        }
+
+        .sidebar-item.active {
+            background: rgba(139, 92, 246, 0.2);
+            border: 1px solid rgba(139, 92, 246, 0.5);
+        }
+
+        .main-content {
+            padding: 2rem;
+        }
+
+        .section {
+            display: none;
+        }
+
+        .section.active {
+            display: block;
+        }
+
+        .tools-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 1.5rem;
+            margin-top: 2rem;
+        }
+
+        .tool-card {
+            background: rgba(20, 20, 20, 0.8);
+            border: 1px solid rgba(139, 92, 246, 0.2);
+            border-radius: 12px;
+            padding: 1.5rem;
+            transition: all 0.3s;
+        }
+
+        .tool-card:hover {
+            border-color: rgba(139, 92, 246, 0.5);
+            transform: translateY(-2px);
+        }
+
+        .tool-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .tool-name {
+            font-size: 1.2rem;
+            font-weight: bold;
+        }
+
+        .tool-status {
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+        }
+
+        .tool-status.connected {
+            background: rgba(34, 197, 94, 0.2);
+            color: #22c55e;
+        }
+
+        .tool-status.disconnected {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+        }
+
+        .tool-capabilities {
+            margin-top: 1rem;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+
+        .capability {
+            background: rgba(139, 92, 246, 0.1);
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.85rem;
+        }
+
+        .config-form {
+            background: rgba(20, 20, 20, 0.8);
+            border: 1px solid rgba(139, 92, 246, 0.2);
+            border-radius: 12px;
+            padding: 2rem;
+            margin-top: 2rem;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .form-label {
+            display: block;
+            margin-bottom: 0.5rem;
+            color: #a78bfa;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 0.75rem;
+            background: rgba(10, 10, 10, 0.8);
+            border: 1px solid rgba(139, 92, 246, 0.3);
+            border-radius: 8px;
+            color: white;
+            font-size: 1rem;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: #8b5cf6;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #8b5cf6 0%, #a78bfa 100%);
+            color: white;
+            border: none;
+            padding: 0.75rem 2rem;
+            border-radius: 8px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(139, 92, 246, 0.3);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-top: 2rem;
+        }
+
+        .stat-card {
+            background: rgba(20, 20, 20, 0.8);
+            border: 1px solid rgba(139, 92, 246, 0.2);
+            border-radius: 12px;
+            padding: 1.5rem;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #8b5cf6;
+        }
+
+        .stat-label {
+            color: #6b7280;
+            margin-top: 0.5rem;
+        }
+
+        .activity-log {
+            background: rgba(20, 20, 20, 0.8);
+            border: 1px solid rgba(139, 92, 246, 0.2);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-top: 2rem;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .log-entry {
+            padding: 0.75rem;
+            border-bottom: 1px solid rgba(139, 92, 246, 0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+
+        .toggle-switch {
+            position: relative;
+            width: 50px;
+            height: 24px;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(139, 92, 246, 0.2);
+            transition: .4s;
+            border-radius: 24px;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked + .toggle-slider {
+            background-color: #8b5cf6;
+        }
+
+        input:checked + .toggle-slider:before {
+            transform: translateX(26px);
+        }
+
+        .manual-post-section {
+            background: rgba(20, 20, 20, 0.8);
+            border: 1px solid rgba(139, 92, 246, 0.2);
+            border-radius: 12px;
+            padding: 2rem;
+            margin-top: 2rem;
+        }
+
+        .platform-selector {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .platform-checkbox {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background: rgba(139, 92, 246, 0.1);
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+
+        .platform-checkbox input {
+            cursor: pointer;
+        }
+
+        .post-textarea {
+            width: 100%;
+            min-height: 150px;
+            padding: 1rem;
+            background: rgba(10, 10, 10, 0.8);
+            border: 1px solid rgba(139, 92, 246, 0.3);
+            border-radius: 8px;
+            color: white;
+            font-size: 1rem;
+            resize: vertical;
+            margin-top: 1rem;
+        }
+
+        /* Sign in overlay */
+        .signin-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.95);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .signin-card {
+            background: rgba(20, 20, 20, 0.95);
+            border: 1px solid rgba(139, 92, 246, 0.3);
+            border-radius: 16px;
+            padding: 3rem;
+            text-align: center;
+            max-width: 400px;
+        }
+
+        .signin-title {
+            font-size: 2rem;
+            color: #8b5cf6;
+            margin-bottom: 2rem;
+        }
+
+        .farcaster-signin-btn {
+            background: #8b5cf6;
+            color: white;
+            border: none;
+            padding: 1rem 2rem;
+            border-radius: 8px;
+            font-size: 1.1rem;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: inline-flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .farcaster-signin-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(139, 92, 246, 0.4);
+        }
+
+        .hidden {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+    <!-- Sign In Overlay -->
+    <div id="signinOverlay" class="signin-overlay">
+        <div class="signin-card">
+            <h1 class="signin-title">CLANKNET Admin</h1>
+            <p style="color: #6b7280; margin-bottom: 2rem;">Sign in with Farcaster to manage your agent</p>
+            <button class="farcaster-signin-btn" onclick="signInWithFarcaster()">
+                <span>🟣</span> Sign in with Farcaster
+            </button>
+        </div>
+    </div>
+
+    <!-- Admin Panel (hidden until signed in) -->
+    <div id="adminPanel" class="hidden">
+        <header class="admin-header">
+            <div class="admin-title">🤖 CLANKNET Agent Admin</div>
+            <div class="user-info">
+                <span id="username">@m00npapi.eth</span>
+                <button class="sign-out-btn" onclick="signOut()">Sign Out</button>
+            </div>
+        </header>
+
+        <div class="admin-container">
+            <nav class="sidebar">
+                <div class="sidebar-item active" onclick="showSection('dashboard')">
+                    📊 Dashboard
+                </div>
+                <div class="sidebar-item" onclick="showSection('tools')">
+                    🔧 Tools & Integrations
+                </div>
+                <div class="sidebar-item" onclick="showSection('posting')">
+                    📝 Posting Config
+                </div>
+                <div class="sidebar-item" onclick="showSection('activity')">
+                    📜 Activity Log
+                </div>
+                <div class="sidebar-item" onclick="showSection('settings')">
+                    ⚙️ Settings
+                </div>
+            </nav>
+
+            <main class="main-content">
+                <!-- Dashboard Section -->
+                <section id="dashboard" class="section active">
+                    <h2 style="color: #8b5cf6; margin-bottom: 2rem;">Agent Dashboard</h2>
+
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-value">247</div>
+                            <div class="stat-label">Total Posts</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value">1.2K</div>
+                            <div class="stat-label">Interactions</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value">5</div>
+                            <div class="stat-label">Active Tools</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value">3</div>
+                            <div class="stat-label">Platforms</div>
+                        </div>
+                    </div>
+
+                    <div class="manual-post-section">
+                        <h3 style="color: #a78bfa; margin-bottom: 1rem;">Manual Post</h3>
+                        <textarea class="post-textarea" placeholder="Type your post here..."></textarea>
+                        <div class="platform-selector">
+                            <label class="platform-checkbox">
+                                <input type="checkbox" checked> Farcaster
+                            </label>
+                            <label class="platform-checkbox">
+                                <input type="checkbox"> Twitter
+                            </label>
+                            <label class="platform-checkbox">
+                                <input type="checkbox"> Lens
+                            </label>
+                            <label class="platform-checkbox">
+                                <input type="checkbox"> Discord
+                            </label>
+                        </div>
+                        <button class="btn-primary" style="margin-top: 1rem;">Post Now</button>
+                    </div>
+
+                    <div class="activity-log">
+                        <h3 style="color: #a78bfa; margin-bottom: 1rem;">Recent Activity</h3>
+                        <div class="log-entry">
+                            <span>Posted to Farcaster</span>
+                            <span style="color: #6b7280;">2 hours ago</span>
+                        </div>
+                        <div class="log-entry">
+                            <span>Replied to @vitalik.eth</span>
+                            <span style="color: #6b7280;">3 hours ago</span>
+                        </div>
+                        <div class="log-entry">
+                            <span>Cross-posted to Twitter</span>
+                            <span style="color: #6b7280;">5 hours ago</span>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Tools Section -->
+                <section id="tools" class="section">
+                    <h2 style="color: #8b5cf6; margin-bottom: 2rem;">Tools & Integrations</h2>
+
+                    <div class="tools-grid">
+                        <div class="tool-card">
+                            <div class="tool-header">
+                                <span class="tool-name">🐦 Twitter/X</span>
+                                <span class="tool-status disconnected">Disconnected</span>
+                            </div>
+                            <p style="color: #6b7280; margin-bottom: 1rem;">Cross-post to Twitter/X</p>
+                            <div class="tool-capabilities">
+                                <span class="capability">post</span>
+                                <span class="capability">reply</span>
+                                <span class="capability">search</span>
+                            </div>
+                            <button class="btn-primary" style="width: 100%; margin-top: 1rem;">Configure</button>
+                        </div>
+
+                        <div class="tool-card">
+                            <div class="tool-header">
+                                <span class="tool-name">🌿 Lens Protocol</span>
+                                <span class="tool-status disconnected">Disconnected</span>
+                            </div>
+                            <p style="color: #6b7280; margin-bottom: 1rem;">Post to Lens Protocol</p>
+                            <div class="tool-capabilities">
+                                <span class="capability">post</span>
+                                <span class="capability">mirror</span>
+                                <span class="capability">collect</span>
+                            </div>
+                            <button class="btn-primary" style="width: 100%; margin-top: 1rem;">Configure</button>
+                        </div>
+
+                        <div class="tool-card">
+                            <div class="tool-header">
+                                <span class="tool-name">📚 Moltbook</span>
+                                <span class="tool-status disconnected">Disconnected</span>
+                            </div>
+                            <p style="color: #6b7280; margin-bottom: 1rem;">Connect to Moltbook network</p>
+                            <div class="tool-capabilities">
+                                <span class="capability">post</span>
+                                <span class="capability">interact</span>
+                            </div>
+                            <button class="btn-primary" style="width: 100%; margin-top: 1rem;">Configure</button>
+                        </div>
+
+                        <div class="tool-card">
+                            <div class="tool-header">
+                                <span class="tool-name">💬 Discord</span>
+                                <span class="tool-status disconnected">Disconnected</span>
+                            </div>
+                            <p style="color: #6b7280; margin-bottom: 1rem;">Post to Discord servers</p>
+                            <div class="tool-capabilities">
+                                <span class="capability">sendMessage</span>
+                                <span class="capability">react</span>
+                            </div>
+                            <button class="btn-primary" style="width: 100%; margin-top: 1rem;">Configure</button>
+                        </div>
+
+                        <div class="tool-card">
+                            <div class="tool-header">
+                                <span class="tool-name">🔍 Perplexity</span>
+                                <span class="tool-status disconnected">Disconnected</span>
+                            </div>
+                            <p style="color: #6b7280; margin-bottom: 1rem;">AI-powered research</p>
+                            <div class="tool-capabilities">
+                                <span class="capability">search</span>
+                                <span class="capability">research</span>
+                                <span class="capability">factCheck</span>
+                            </div>
+                            <button class="btn-primary" style="width: 100%; margin-top: 1rem;">Configure</button>
+                        </div>
+
+                        <div class="tool-card">
+                            <div class="tool-header">
+                                <span class="tool-name">🔗 Etherscan</span>
+                                <span class="tool-status disconnected">Disconnected</span>
+                            </div>
+                            <p style="color: #6b7280; margin-bottom: 1rem;">Blockchain monitoring</p>
+                            <div class="tool-capabilities">
+                                <span class="capability">track</span>
+                                <span class="capability">monitor</span>
+                                <span class="capability">gas</span>
+                            </div>
+                            <button class="btn-primary" style="width: 100%; margin-top: 1rem;">Configure</button>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Posting Config Section -->
+                <section id="posting" class="section">
+                    <h2 style="color: #8b5cf6; margin-bottom: 2rem;">Posting Configuration</h2>
+
+                    <div class="config-form">
+                        <div class="form-group">
+                            <label class="form-label">Posting Interval</label>
+                            <select class="form-input">
+                                <option>30 minutes - 3 hours (Random)</option>
+                                <option>Every 30 minutes</option>
+                                <option>Every hour</option>
+                                <option>Every 2 hours</option>
+                                <option>Manual only</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Cross-posting Platforms</label>
+                            <div style="display: flex; flex-direction: column; gap: 1rem; margin-top: 1rem;">
+                                <label style="display: flex; align-items: center; gap: 1rem;">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" checked>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                    Farcaster (Primary)
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 1rem;">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                    Twitter/X
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 1rem;">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                    Lens Protocol
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Post Style Mix</label>
+                            <div style="display: grid; gap: 0.5rem; margin-top: 1rem;">
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span>Ultra Short</span>
+                                    <span>15%</span>
+                                </div>
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span>Shitpost</span>
+                                    <span>35%</span>
+                                </div>
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span>Observation</span>
+                                    <span>25%</span>
+                                </div>
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span>Link Drop</span>
+                                    <span>15%</span>
+                                </div>
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span>Mini Rant</span>
+                                    <span>10%</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <button class="btn-primary">Save Configuration</button>
+                    </div>
+                </section>
+
+                <!-- Activity Log Section -->
+                <section id="activity" class="section">
+                    <h2 style="color: #8b5cf6; margin-bottom: 2rem;">Activity Log</h2>
+
+                    <div class="activity-log" style="max-height: none;">
+                        <!-- Activity entries will be loaded here -->
+                    </div>
+                </section>
+
+                <!-- Settings Section -->
+                <section id="settings" class="section">
+                    <h2 style="color: #8b5cf6; margin-bottom: 2rem;">Agent Settings</h2>
+
+                    <div class="config-form">
+                        <div class="form-group">
+                            <label class="form-label">Agent Name</label>
+                            <input class="form-input" value="m00npapi.eth-agent" />
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">CLANKNET Reply Price</label>
+                            <input class="form-input" value="5000000" />
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">LLM Provider</label>
+                            <select class="form-input">
+                                <option>Anthropic (Claude)</option>
+                                <option>OpenAI (GPT-4)</option>
+                                <option>Groq</option>
+                                <option>Local (Ollama)</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Temperature</label>
+                            <input class="form-input" type="number" min="0" max="1" step="0.1" value="0.8" />
+                        </div>
+
+                        <button class="btn-primary">Save Settings</button>
+                    </div>
+                </section>
+            </main>
+        </div>
+    </div>
+
+    <script>
+        // Check if user is authenticated
+        function checkAuth() {
+            const auth = localStorage.getItem('clanknet_auth');
+            if (auth) {
+                document.getElementById('signinOverlay').classList.add('hidden');
+                document.getElementById('adminPanel').classList.remove('hidden');
+                loadDashboard();
+            }
+        }
+
+        // Sign in with Farcaster
+        async function signInWithFarcaster() {
+            // In production, this would use Farcaster Connect or similar
+            // For now, simulate sign in
+            localStorage.setItem('clanknet_auth', JSON.stringify({
+                fid: 9933,
+                username: 'm00npapi.eth',
+                timestamp: Date.now()
+            }));
+
+            document.getElementById('signinOverlay').classList.add('hidden');
+            document.getElementById('adminPanel').classList.remove('hidden');
+            loadDashboard();
+        }
+
+        // Sign out
+        function signOut() {
+            localStorage.removeItem('clanknet_auth');
+            document.getElementById('signinOverlay').classList.remove('hidden');
+            document.getElementById('adminPanel').classList.add('hidden');
+        }
+
+        // Show section
+        function showSection(sectionId) {
+            // Hide all sections
+            document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+            // Show selected section
+            document.getElementById(sectionId).classList.add('active');
+
+            // Update sidebar
+            document.querySelectorAll('.sidebar-item').forEach(item => item.classList.remove('active'));
+            event.target.classList.add('active');
+        }
+
+        // Load dashboard data
+        async function loadDashboard() {
+            // Fetch stats from API
+            try {
+                const response = await fetch('/api/admin/stats', {
+                    headers: {
+                        'Authorization': 'Bearer clanknet-admin'
+                    }
+                });
+                const data = await response.json();
+
+                // Update stats display
+                document.querySelector('.stat-card:nth-child(1) .stat-value').textContent = data.totalPosts || 0;
+                document.querySelector('.stat-card:nth-child(2) .stat-value').textContent = '0'; // Interactions not tracked yet
+                document.querySelector('.stat-card:nth-child(3) .stat-value').textContent = data.activeTools || 0;
+                document.querySelector('.stat-card:nth-child(4) .stat-value').textContent = data.platforms || 0;
+
+                // Update activity log
+                const activityLog = document.querySelector('.activity-log');
+                if (data.recentActivity && data.recentActivity.length > 0) {
+                    let activityHTML = '<h3 style="color: #a78bfa; margin-bottom: 1rem;">Recent Activity</h3>';
+                    data.recentActivity.forEach(post => {
+                        const time = new Date(post.timestamp);
+                        const hoursAgo = Math.round((Date.now() - time) / (1000 * 60 * 60));
+                        activityHTML += `
+                            <div class="log-entry">
+                                <span title="${post.text}">${post.text.substring(0, 50)}${post.text.length > 50 ? '...' : ''}</span>
+                                <span style="color: #6b7280;">${hoursAgo} hours ago</span>
+                            </div>
+                        `;
+                    });
+                    activityLog.innerHTML = activityHTML;
+                } else {
+                    activityLog.innerHTML = '<h3 style="color: #a78bfa;">No recent activity</h3>';
+                }
+            } catch (error) {
+                console.error('Failed to load stats:', error);
+            }
+        }
+
+        // Initialize on load
+        checkAuth();
+    </script>
+</body>
+</html>

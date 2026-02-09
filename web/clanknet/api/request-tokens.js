@@ -1,395 +1,315 @@
 /**
  * Vercel Serverless Function: CLANKNET Token Request API with x402 Payment Protocol
  * Endpoint: /api/request-tokens
- * Handles token requests with ERC-8004 authentication and x402 payments
  */
 
 const { ethers } = require('ethers');
-const crypto = require('crypto');
+const { setCORS } = require('./_shared/cors');
+const { verifyERC8004Auth } = require('./_shared/auth');
+const { checkRateLimit } = require('./_shared/rate-limit');
+const { saveData, loadData, isNonceUsed, markNonceUsed } = require('./_shared/kv');
+const {
+    CLANKNET_ADDRESS, USDC_ADDRESS, PAYMENT_RECIPIENT, BASE_RPC_URL,
+    USDC_COST, CLANKNET_REWARD, USDC_ABI, CLANKNET_ABI, REGISTRATION_CHALLENGES
+} = require('./_shared/constants');
 
-// Configuration
-const provider = new ethers.providers.JsonRpcProvider('https://mainnet.base.org');
+// Lazy-init provider and wallet
+let _provider = null;
+let _executorWallet = null;
 
-// Set up wallet for executing transfers
-const EXECUTOR_PRIVATE_KEY = process.env.EXECUTOR_PRIVATE_KEY;
-const executorWallet = EXECUTOR_PRIVATE_KEY ? new ethers.Wallet(EXECUTOR_PRIVATE_KEY, provider) : null;
-
-// Base contracts
-const USDC_ADDRESS = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'; // USDC on Base
-
-// USDC ABI for transferWithAuthorization
-const USDC_ABI = [
-    'function transferWithAuthorization(address from, address to, uint256 value, uint256 validAfter, uint256 validBefore, bytes32 nonce, uint8 v, bytes32 r, bytes32 s) external',
-    'function balanceOf(address account) view returns (uint256)'
-];
-const CLANKNET_ADDRESS = '0x623693BefAECf61484e344fa272e9A8B82d9BB07';
-const ERC8004_REGISTRY = '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432';
-const PAYMENT_RECIPIENT = process.env.PAYMENT_RECIPIENT || '0xB84649C1e32ED82CC380cE72DF6DF540b303839F';
-
-// Pricing
-const USDC_COST = '100000'; // 0.1 USDC (6 decimals)
-const CLANKNET_REWARD = '1000000000000000000000'; // 1000 CLANKNET (18 decimals)
-
-// Registration verification challenges
-const REGISTRATION_CHALLENGES = {
-    'v4-pool-address': '0x4cb72df111fad6f48cd981d40ec7c76f6800624c1202252b2ece17044852afaf',
-    'universal-router': '0x66a9893cc07d91d95644aedd05d03f95e1dba8af',
-    'clanknet-symbol': 'CLANKNET',
-    'payment-amount': '100000',
-    'registry-name': 'ERC8004AgentRegistry'
-};
-
-// In-memory storage (use database in production)
-const requests = new Map();
-const usedNonces = new Set();
-let requestCounter = 0;
-
-/**
- * Verify ERC-8004 authentication header
- */
-function verifyERC8004Auth(authHeader, method, path, body = '') {
-    if (!authHeader || !authHeader.startsWith('ERC-8004 ')) {
-        return { valid: false, error: 'Missing or invalid Authorization header' };
-    }
-
-    try {
-        const parts = authHeader.slice(9).split(':');
-        if (parts.length !== 5) {
-            return { valid: false, error: 'Invalid header format' };
-        }
-
-        const [chainId, registryAddress, agentId, timestamp, signature] = parts;
-
-        // Check timestamp (5-minute window)
-        const now = Math.floor(Date.now() / 1000);
-        const ts = parseInt(timestamp);
-        if (Math.abs(now - ts) > 300) {
-            return { valid: false, error: 'Timestamp out of range' };
-        }
-
-        // Recreate the message
-        const message = `${chainId}:${registryAddress}:${agentId}:${timestamp}:${method}:${path}`;
-        if (body) {
-            const bodyHash = crypto.createHash('sha256').update(body).digest('hex');
-            message += `:${bodyHash}`;
-        }
-
-        // Recover signer address
-        const signerAddress = ethers.utils.verifyMessage(message, signature);
-
-        return {
-            valid: true,
-            chainId,
-            registryAddress,
-            agentId,
-            signerAddress
-        };
-    } catch (error) {
-        return { valid: false, error: error.message };
-    }
+function getProvider() {
+    if (!_provider) _provider = new ethers.providers.JsonRpcProvider(BASE_RPC_URL);
+    return _provider;
 }
 
-/**
- * Send 402 Payment Required response
- */
+function getExecutorWallet() {
+    if (_executorWallet !== null) return _executorWallet;
+    const pk = process.env.EXECUTOR_PRIVATE_KEY ? process.env.EXECUTOR_PRIVATE_KEY.trim() : null;
+    if (pk) {
+        try { _executorWallet = new ethers.Wallet(pk, getProvider()); }
+        catch (e) { console.error('Failed to initialize executor wallet:', e.message); _executorWallet = false; }
+    } else {
+        _executorWallet = false;
+    }
+    return _executorWallet || null;
+}
+
+// In-memory stores (augmented by Redis via _shared/kv)
+const requests = new Map();
+let requestCounter = 0;
+const usedSignatures = new Set();
+
+// Challenge answers (flat lookup for request validation)
+const CHALLENGE_ANSWERS = {};
+for (const [id, ch] of Object.entries(REGISTRATION_CHALLENGES)) {
+    CHALLENGE_ANSWERS[id] = ch.answer;
+}
+
+async function saveRequest(requestId, requestData) {
+    requests.set(requestId, requestData);
+    await saveData(`request:${requestId}`, requestData);
+}
+
 function send402PaymentRequired(res, resourceUrl) {
     const paymentRequired = {
         x402Version: 2,
         accepts: [{
             scheme: 'exact',
-            network: 'eip155:8453', // Base
+            network: 'eip155:8453',
             asset: USDC_ADDRESS,
             amount: USDC_COST,
             payTo: PAYMENT_RECIPIENT,
-            message: 'CLANKNET Token Request - 1000 tokens'
+            message: 'CLANKNET Token Request - 50000 tokens'
         }],
         resourceUrl
     };
-
-    res.status(402).json({
+    res.setHeader('PAYMENT-REQUIRED', Buffer.from(JSON.stringify(paymentRequired)).toString('base64'));
+    return res.status(402).json({
         error: 'Payment required',
         message: 'Submit payment signature to proceed',
         paymentRequired
     });
-
-    // Also set header for compatibility
-    res.setHeader('PAYMENT-REQUIRED', Buffer.from(JSON.stringify(paymentRequired)).toString('base64'));
 }
 
-/**
- * Main handler for token requests
- */
-export default async function handler(req, res) {
-    // Enable CORS
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, PAYMENT-SIGNATURE');
-
-    if (req.method === 'OPTIONS') {
-        return res.status(200).end();
-    }
+module.exports = async function handler(req, res) {
+    if (setCORS(req, res)) return res.status(200).end();
 
     if (req.method !== 'POST') {
         return res.status(405).json({ error: 'Method not allowed' });
     }
 
+    const clientIP = req.headers['x-vercel-forwarded-for'] || req.headers['x-real-ip'] || req.socket?.remoteAddress || 'unknown';
+    const rateCheck = await checkRateLimit(`ip:${clientIP}`);
+    if (!rateCheck.allowed) {
+        return res.status(429).json({
+            error: 'Too many requests',
+            retryAfter: rateCheck.retryAfter
+        });
+    }
+    res.setHeader('X-RateLimit-Remaining', rateCheck.remaining || 0);
+
     try {
         const { address, requestType, reason, registrationChallenge, challengeAnswer } = req.body;
 
-        // Validate required fields
-        if (!address || !ethers.utils.isAddress(address)) {
-            return res.status(400).json({ error: 'Invalid wallet address' });
-        }
-
-        if (!requestType || !['onboarding', 'paid'].includes(requestType)) {
-            return res.status(400).json({ error: 'Invalid request type (onboarding or paid)' });
-        }
-
-        // Generate request ID
-        const requestId = `req_${Date.now()}_${++requestCounter}`;
-
-        // Handle free onboarding
-        if (requestType === 'onboarding') {
-            // Check if address already claimed onboarding
-            const hasOnboarded = Array.from(requests.values()).some(
-                r => r.address === address && r.requestType === 'onboarding' && r.status === 'completed'
-            );
-
-            if (hasOnboarded) {
-                return res.status(400).json({
-                    error: 'Onboarding tokens already claimed',
-                    message: 'This address has already received onboarding tokens'
-                });
-            }
-
-            // Approve onboarding request
-            const request = {
-                requestId,
-                address,
-                requestType,
-                reason: reason || 'New agent onboarding',
-                amount: CLANKNET_REWARD,
-                status: 'completed',
-                timestamp: Date.now()
-            };
-
-            requests.set(requestId, request);
-
-            return res.status(200).json({
-                success: true,
-                requestId,
-                message: '1000 CLANKNET tokens approved for onboarding',
-                tokens: '1000',
-                status: 'completed',
-                txHash: `0x${crypto.randomBytes(32).toString('hex')}` // Mock tx hash
+        if (!address) {
+            return res.status(400).json({
+                error: 'Missing wallet address',
+                docs: '/api/docs'
             });
         }
 
-        // Handle paid requests
-        if (requestType === 'paid') {
-            // Verify ERC-8004 auth for paid requests
-            const authResult = verifyERC8004Auth(
-                req.headers.authorization,
-                'POST',
-                '/api/request-tokens',
-                JSON.stringify(req.body)
+        if (!ethers.utils.isAddress(address)) {
+            return res.status(400).json({
+                error: 'Invalid wallet address format',
+                docs: '/api/docs#walletValidation'
+            });
+        }
+
+        if (!requestType || !['onboarding', 'paid'].includes(requestType)) {
+            return res.status(400).json({
+                error: 'Invalid request type',
+                validOptions: ['onboarding', 'paid'],
+                docs: '/api/docs'
+            });
+        }
+
+        const requestId = `req_${Date.now()}_${++requestCounter}`;
+
+        // --- Free onboarding ---
+        if (requestType === 'onboarding') {
+            const hasOnboarded = Array.from(requests.values()).some(
+                r => r.address === address && r.requestType === 'onboarding' && r.status === 'completed'
             );
-
-            if (!authResult.valid) {
-                return res.status(401).json({
-                    error: 'Authentication failed',
-                    message: authResult.error
-                });
+            if (hasOnboarded) {
+                return res.status(400).json({ error: 'Onboarding tokens already claimed' });
             }
 
-            // Verify registration challenge if provided
-            if (registrationChallenge) {
-                const correctAnswer = REGISTRATION_CHALLENGES[registrationChallenge];
-                if (!correctAnswer) {
-                    return res.status(400).json({
-                        error: 'Invalid challenge',
-                        availableChallenges: Object.keys(REGISTRATION_CHALLENGES)
-                    });
-                }
+            const request = {
+                requestId, address, requestType,
+                reason: reason || 'New agent onboarding',
+                amount: CLANKNET_REWARD, status: 'completed',
+                timestamp: Date.now()
+            };
+            await saveRequest(requestId, request);
 
-                if (challengeAnswer !== correctAnswer) {
-                    return res.status(400).json({
-                        error: 'Incorrect challenge answer',
-                        hint: 'Please review the documentation'
-                    });
-                }
+            return res.status(200).json({
+                success: true, requestId,
+                message: '50000 CLANKNET tokens approved for onboarding',
+                tokens: '50000', status: 'completed',
+                txHash: ethers.utils.hexlify(ethers.utils.randomBytes(32))
+            });
+        }
+
+        // --- Paid requests ---
+        const authResult = verifyERC8004Auth(
+            req.headers.authorization, 'POST', '/api/request-tokens',
+            JSON.stringify(req.body)
+        );
+        if (!authResult.valid) {
+            return res.status(401).json({
+                error: 'Authentication failed',
+                message: authResult.error,
+                format: 'ERC-8004 <chainId>:<registryAddress>:<agentId>:<timestamp>:<signature>',
+                docs: '/api/docs#erc8004Authentication'
+            });
+        }
+
+        // Verify registration challenge if provided
+        if (registrationChallenge) {
+            const correctAnswer = CHALLENGE_ANSWERS[registrationChallenge];
+            if (!correctAnswer) {
+                return res.status(400).json({ error: 'Invalid challenge', availableChallenges: Object.keys(CHALLENGE_ANSWERS) });
             }
-
-            // Check for payment signature
-            const paymentSig = req.headers['payment-signature'];
-
-            if (!paymentSig) {
-                // No payment provided - send 402
-                const resourceUrl = `/api/request-tokens/${requestId}`;
-
-                // Store pending request
-                const request = {
-                    requestId,
-                    address,
-                    requestType,
-                    reason: reason || 'Token purchase',
-                    amount: CLANKNET_REWARD,
-                    costUSDC: USDC_COST,
-                    agentId: authResult.agentId,
-                    status: 'payment_required',
-                    timestamp: Date.now()
-                };
-
-                requests.set(requestId, request);
-
-                return send402PaymentRequired(res, resourceUrl);
+            if (challengeAnswer !== correctAnswer) {
+                return res.status(400).json({ error: 'Incorrect challenge answer' });
             }
+        }
 
-            // Process payment signature
-            try {
-                const paymentData = JSON.parse(Buffer.from(paymentSig, 'base64').toString());
+        const paymentSig = req.headers['payment-signature'];
 
-                // Verify EIP-3009 transferWithAuthorization
-                const domain = {
-                    name: "USD Coin",
-                    version: "2",
-                    chainId: 8453,
-                    verifyingContract: USDC_ADDRESS
-                };
+        if (!paymentSig) {
+            const resourceUrl = `/api/request-tokens/${requestId}`;
+            const request = {
+                requestId, address, requestType,
+                reason: reason || 'Token purchase',
+                amount: CLANKNET_REWARD, costUSDC: USDC_COST,
+                agentId: authResult.agentId, status: 'payment_required',
+                timestamp: Date.now()
+            };
+            await saveRequest(requestId, request);
+            return send402PaymentRequired(res, resourceUrl);
+        }
 
-                const types = {
-                    TransferWithAuthorization: [
-                        { name: "from", type: "address" },
-                        { name: "to", type: "address" },
-                        { name: "value", type: "uint256" },
-                        { name: "validAfter", type: "uint256" },
-                        { name: "validBefore", type: "uint256" },
-                        { name: "nonce", type: "bytes32" }
-                    ]
-                };
+        // Process payment signature
+        let paymentData;
+        try {
+            paymentData = JSON.parse(Buffer.from(paymentSig, 'base64').toString());
+        } catch {
+            return res.status(400).json({ error: 'Invalid payment signature encoding' });
+        }
 
-                // Verify signature
-                const recoveredAddress = ethers.utils.verifyTypedData(
-                    domain,
-                    types,
-                    {
-                        from: paymentData.from,
-                        to: paymentData.to,
-                        value: paymentData.value,
-                        validAfter: paymentData.validAfter,
-                        validBefore: paymentData.validBefore,
-                        nonce: paymentData.nonce
-                    },
-                    paymentData.signature
-                );
-
-                // Verify payment details
-                if (paymentData.to !== PAYMENT_RECIPIENT) {
-                    return res.status(400).json({ error: 'Invalid payment recipient' });
-                }
-
-                if (paymentData.value !== USDC_COST) {
-                    return res.status(400).json({ error: 'Incorrect payment amount' });
-                }
-
-                // Check nonce hasn't been used
-                const nonceStr = paymentData.nonce;
-                if (usedNonces.has(nonceStr)) {
-                    return res.status(400).json({ error: 'Payment nonce already used' });
-                }
-                usedNonces.add(nonceStr);
-
-                // Execute the USDC transfer on-chain
-                if (!executorWallet) {
-                    return res.status(500).json({
-                        error: 'Payment execution not configured',
-                        message: 'Server cannot execute transfers without EXECUTOR_PRIVATE_KEY'
-                    });
-                }
-
-                try {
-                    // Connect to USDC contract
-                    const usdcContract = new ethers.Contract(USDC_ADDRESS, USDC_ABI, executorWallet);
-
-                    // Split signature into v, r, s components
-                    const sig = ethers.utils.splitSignature(paymentData.signature);
-
-                    // Execute transferWithAuthorization on-chain
-                    console.log('Executing USDC transfer on-chain...');
-                    const tx = await usdcContract.transferWithAuthorization(
-                        paymentData.from,
-                        paymentData.to,
-                        paymentData.value,
-                        paymentData.validAfter,
-                        paymentData.validBefore,
-                        paymentData.nonce,
-                        sig.v,
-                        sig.r,
-                        sig.s,
-                        {
-                            gasLimit: 200000,
-                            gasPrice: ethers.utils.parseUnits('0.1', 'gwei') // Base has low gas
-                        }
-                    );
-
-                    console.log('Transaction submitted:', tx.hash);
-
-                    // Wait for confirmation
-                    const receipt = await tx.wait();
-                    console.log('Transaction confirmed:', receipt.transactionHash);
-
-                    // Payment executed successfully - approve tokens
-                    const request = {
-                        requestId,
-                        address,
-                        requestType,
-                        reason: reason || 'Token purchase',
-                        amount: CLANKNET_REWARD,
-                        costUSDC: USDC_COST,
-                        paymentFrom: paymentData.from,
-                        agentId: authResult.agentId,
-                        status: 'completed',
-                        txHash: receipt.transactionHash,
-                        blockNumber: receipt.blockNumber,
-                        timestamp: Date.now()
-                    };
-
-                    requests.set(requestId, request);
-
-                    return res.status(200).json({
-                        success: true,
-                        requestId,
-                        message: '1000 CLANKNET tokens approved - USDC payment received on-chain',
-                        tokens: '1000',
-                        status: 'completed',
-                        paymentReceived: '0.1 USDC',
-                        txHash: receipt.transactionHash,
-                        blockNumber: receipt.blockNumber,
-                        explorer: `https://basescan.org/tx/${receipt.transactionHash}`
-                    });
-
-                } catch (txError) {
-                    console.error('Transaction failed:', txError);
-                    return res.status(500).json({
-                        error: 'Payment execution failed',
-                        message: txError.message,
-                        hint: 'Ensure the payment signature is valid and signer has sufficient USDC'
-                    });
-                }
-
-            } catch (error) {
-                return res.status(400).json({
-                    error: 'Invalid payment signature',
-                    message: error.message
-                });
+        const requiredFields = ['from', 'to', 'value', 'validAfter', 'validBefore', 'nonce', 'signature'];
+        for (const field of requiredFields) {
+            if (paymentData[field] === undefined || paymentData[field] === null) {
+                return res.status(400).json({ error: 'Payment signature missing required fields' });
             }
+        }
+
+        // Verify EIP-3009 transferWithAuthorization
+        const domain = { name: "USD Coin", version: "2", chainId: 8453, verifyingContract: USDC_ADDRESS };
+        const types = {
+            TransferWithAuthorization: [
+                { name: "from", type: "address" }, { name: "to", type: "address" },
+                { name: "value", type: "uint256" }, { name: "validAfter", type: "uint256" },
+                { name: "validBefore", type: "uint256" }, { name: "nonce", type: "bytes32" }
+            ]
+        };
+
+        const recoveredAddress = ethers.utils.verifyTypedData(domain, types, {
+            from: paymentData.from, to: paymentData.to, value: paymentData.value,
+            validAfter: paymentData.validAfter, validBefore: paymentData.validBefore, nonce: paymentData.nonce
+        }, paymentData.signature);
+
+        if (recoveredAddress.toLowerCase() !== paymentData.from.toLowerCase()) {
+            return res.status(400).json({ error: 'Payment signature does not match sender address' });
+        }
+        if (paymentData.to.toLowerCase() !== PAYMENT_RECIPIENT.toLowerCase()) {
+            return res.status(400).json({ error: 'Invalid payment recipient' });
+        }
+        if (paymentData.value !== USDC_COST) {
+            return res.status(400).json({ error: 'Incorrect payment amount' });
+        }
+
+        // Nonce replay protection (persisted via Redis)
+        if (await isNonceUsed(paymentData.nonce)) {
+            return res.status(400).json({ error: 'Payment nonce already used' });
+        }
+        const sigHash = ethers.utils.keccak256(ethers.utils.toUtf8Bytes(paymentData.signature));
+        if (usedSignatures.has(sigHash)) {
+            return res.status(400).json({ error: 'Payment signature already used' });
+        }
+        usedSignatures.add(sigHash);
+        await markNonceUsed(paymentData.nonce);
+
+        const executorWallet = getExecutorWallet();
+        if (!executorWallet) {
+            return res.status(500).json({ error: 'Payment execution not configured' });
+        }
+
+        // Execute on-chain transfers
+        const usdcContract = new ethers.Contract(USDC_ADDRESS, USDC_ABI, executorWallet);
+        const clanknetContract = new ethers.Contract(CLANKNET_ADDRESS, CLANKNET_ABI, executorWallet);
+
+        // Pre-checks
+        const [senderBalance, executorBalance] = await Promise.all([
+            usdcContract.balanceOf(paymentData.from),
+            clanknetContract.balanceOf(executorWallet.address)
+        ]);
+        if (senderBalance.lt(USDC_COST)) {
+            return res.status(400).json({ error: 'Insufficient USDC balance' });
+        }
+        if (executorBalance.lt(CLANKNET_REWARD)) {
+            return res.status(503).json({ error: 'Service temporarily unavailable', message: 'Token distribution pool needs refunding.' });
+        }
+
+        // Execute USDC transferWithAuthorization
+        const sig = ethers.utils.splitSignature(paymentData.signature);
+        const tx = await usdcContract.transferWithAuthorization(
+            paymentData.from, paymentData.to, paymentData.value,
+            paymentData.validAfter, paymentData.validBefore, paymentData.nonce,
+            sig.v, sig.r, sig.s,
+            { gasLimit: 200000, gasPrice: ethers.utils.parseUnits('0.1', 'gwei') }
+        );
+        const receipt = await tx.wait();
+
+        // Distribute CLANKNET tokens
+        try {
+            const clanknetTx = await clanknetContract.transfer(address, CLANKNET_REWARD, {
+                gasLimit: 100000, gasPrice: ethers.utils.parseUnits('0.1', 'gwei')
+            });
+            const clanknetReceipt = await clanknetTx.wait();
+
+            const request = {
+                requestId, address, requestType,
+                reason: reason || 'Token purchase',
+                amount: CLANKNET_REWARD, costUSDC: USDC_COST,
+                paymentFrom: paymentData.from, agentId: authResult.agentId,
+                status: 'completed',
+                usdcTxHash: receipt.transactionHash,
+                clanknetTxHash: clanknetReceipt.transactionHash,
+                timestamp: Date.now()
+            };
+            await saveRequest(requestId, request);
+
+            return res.status(200).json({
+                success: true, requestId,
+                message: '50000 CLANKNET tokens sent - USDC payment received on-chain',
+                tokens: '50000', status: 'completed',
+                paymentReceived: '0.1 USDC',
+                usdcTxHash: receipt.transactionHash,
+                clanknetTxHash: clanknetReceipt.transactionHash,
+                explorer: {
+                    usdcPayment: `https://basescan.org/tx/${receipt.transactionHash}`,
+                    clanknetTransfer: `https://basescan.org/tx/${clanknetReceipt.transactionHash}`
+                }
+            });
+        } catch (clanknetError) {
+            console.error('CLANKNET distribution failed:', clanknetError);
+            await saveRequest(requestId, {
+                requestId, address, requestType,
+                status: 'payment_received_tokens_failed',
+                usdcTxHash: receipt.transactionHash,
+                error: clanknetError.message, timestamp: Date.now()
+            });
+            return res.status(500).json({
+                success: false, requestId,
+                message: 'USDC payment received but CLANKNET distribution failed',
+                txHash: receipt.transactionHash
+            });
         }
 
     } catch (error) {
         console.error('Token request error:', error);
-        return res.status(500).json({
-            error: 'Internal server error',
-            message: error.message
-        });
+        return res.status(500).json({ error: 'Internal server error', message: error.message });
     }
-}
+};
